@@ -62,7 +62,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(job["matter_number"], "M12205")
         self.assertEqual(job["outgoing_message_id"], "outgoing")
         self.assertTrue(Path(job["zip_path"]).is_file())
-        self.assertIn("I attached 1", job["reply_text"])
+        self.assertIn("The ZIP contains 1 file", job["reply_text"])
         self.assertIsNone(self.worker.process_next())
 
     def multiple(self):

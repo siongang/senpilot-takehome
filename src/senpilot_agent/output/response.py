@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from email.utils import parseaddr
 
 from senpilot_agent.models import CATEGORIES, MatterResult
@@ -27,28 +29,100 @@ def _greeting(sender: str) -> str:
     return "Hi {},".format(name) if name else "Hi,"
 
 
-def format_result(result: MatterResult, attached_count: int, sender: str = "") -> str:
-    counts = ", ".join(
-        "{} {}".format(result.category_counts[name], name) for name in CATEGORIES
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    word = singular if count == 1 else (plural if plural is not None else singular + "s")
+    return "{} {}".format(count, word)
+
+
+def _display_date(value: str) -> str:
+    """Show a site MM/DD/YYYY value as 'June 26, 2025'. Leave other text unchanged."""
+    if not isinstance(value, str):
+        return value
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", value.strip())
+    if match is None:
+        return value
+    month, day, year = (int(part) for part in match.groups())
+    try:
+        parsed = datetime(year, month, day)
+    except ValueError:
+        return value
+    return "{} {}, {}".format(parsed.strftime("%B"), parsed.day, parsed.year)
+
+
+def _title_parts(title: str) -> tuple[str, str]:
+    """First line is the heading. Later lines are the description."""
+    if not isinstance(title, str):
+        return "", ""
+    lines = [line.strip() for line in title.splitlines() if line.strip()]
+    if not lines:
+        return "", ""
+    return lines[0], "\n".join(lines[1:])
+
+
+def _listing_summary(total: int) -> str:
+    return (
+        "These five tabs show {}. The same document can appear on more than one tab, "
+        "so this is not a count of unique files."
+    ).format(_plural(total, "listing"))
+
+
+def _attachment_line(result: MatterResult, attached_count: int) -> str:
+    category = result.requested_category
+    downloaded = len(result.successful_documents)
+    listed = result.category_counts[category]
+    files = _plural(attached_count, "file")
+    if attached_count == downloaded:
+        if attached_count == listed:
+            return "The ZIP contains {} from {}.".format(files, category)
+        return "The ZIP contains {} from {} ({} on that tab).".format(
+            files, category, _plural(listed, "listing"),
+        )
+    source = "{} in {}".format(_plural(downloaded, "listing"), category)
+    if downloaded == listed:
+        return "The ZIP contains {} from {}.".format(files, source)
+    return "The ZIP contains {} from {} ({} on that tab).".format(
+        files, source, _plural(listed, "listing"),
     )
+
+
+def format_result(
+    result: MatterResult,
+    attached_count: int,
+    sender: str = "",
+    attachment_line: str | None = None,
+) -> str:
+    headline, description = _title_parts(result.title)
     detail = [
         _greeting(sender),
         "",
-        "{}: {}".format(result.matter_number, result.title),
-        "Status: {}. Type: {}. Category: {}. Outcome: {}.".format(
-            result.status, result.matter_type, result.category, result.outcome
-        ),
-        "Date received: {}. {}: {}.".format(
-            result.date_received, result.second_date_label, result.second_date
-        ),
-        "The matter shows {} category listings across five tabs: {}.".format(
-            result.listing_total, counts
-        ),
-        "I attached {} files from {} downloaded {} listings as a ZIP ({} listings in this category).".format(
-            attached_count, len(result.successful_documents), result.requested_category,
-            result.category_counts[result.requested_category],
-        ),
+        "Here are the results for {}.".format(result.matter_number),
+        "",
+        result.matter_number,
     ]
+    if headline:
+        detail.append(headline)
+    if description:
+        detail.extend(["", description])
+    detail.extend([
+        "",
+        "Status: {}".format(result.status),
+        "Type: {}".format(result.matter_type),
+        "Category: {}".format(result.category),
+        "Outcome: {}".format(result.outcome),
+        "Date received: {}".format(_display_date(result.date_received)),
+        "{}: {}".format(result.second_date_label, _display_date(result.second_date)),
+        "",
+        "Listings",
+    ])
+    for name in CATEGORIES:
+        requested = " (requested)" if name == result.requested_category else ""
+        detail.append("{}: {}{}".format(name, result.category_counts[name], requested))
+    detail.extend([
+        "",
+        _listing_summary(result.listing_total),
+        "",
+        attachment_line if attachment_line is not None else _attachment_line(result, attached_count),
+    ])
     failed = [item for item in result.documents if item.status == "failed"]
     if failed:
         detail.append(
@@ -70,16 +144,14 @@ def format_result(result: MatterResult, attached_count: int, sender: str = "") -
 
 
 def format_empty(result: MatterResult, sender: str = "") -> str:
-    body = format_result(result, 0, sender)
-    return body.replace(
-        "I attached 0 files from {} downloaded {} listings as a ZIP ({} listings in this category).".format(
-            len(result.successful_documents), result.requested_category,
-            result.category_counts[result.requested_category],
-        ),
-        ("This matter lists no {}. The ZIP is empty.".format(result.requested_category)
-         if result.category_counts[result.requested_category] == 0
-         else "No files could be attached from the selected {} listings. The ZIP is empty.".format(result.requested_category)),
-    )
+    count = result.category_counts[result.requested_category]
+    if count == 0:
+        line = "This matter lists no {}. The ZIP is empty.".format(result.requested_category)
+    else:
+        line = "No files could be attached from the selected {} {}. The ZIP is empty.".format(
+            result.requested_category, "listing" if count == 1 else "listings",
+        )
+    return format_result(result, 0, sender, attachment_line=line)
 
 
 def format_not_found(matter_number: str, sender: str = "") -> str:
