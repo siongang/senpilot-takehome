@@ -74,6 +74,18 @@ def search_page(*, body="Loading documents", dialog=False, dialog_after_click=Fa
 
 
 class ScraperTests(unittest.TestCase):
+    def test_category_retry_skips_click_when_tab_is_selected(self):
+        page = MagicMock()
+        tab = page.get_by_role.return_value
+        selected = page.locator.return_value.filter.return_value
+        selected.count.return_value = 1
+        browser._open_category(page, "Recordings")
+        tab.click.assert_not_called()
+        selected.first.wait_for.assert_any_call(state="visible", timeout=30000)
+        selected.count.return_value = 0
+        browser._open_category(page, "Recordings")
+        tab.click.assert_called_once_with()
+
     def test_retry_recovers_browser_failures_but_is_bounded(self):
         operation = MagicMock(side_effect=[PlaywrightTimeout("slow"), "done"])
         self.assertEqual(browser._retry(operation), "done")

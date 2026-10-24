@@ -14,15 +14,15 @@ REPORT_TITLES = {
     "Key Documents": r"Key Documents? List",
     "Other Documents": r"Other Documents? List",
     "Transcripts": r"Transcripts? List",
-    "Recordings": r"Recordings? List",
+    "Recordings": r"(?:Recordings? List|List of Sound Files)",
 }
 TABLE_HEADER = re.compile(
-    r"^\s*(?:Doc(?:ument)?|Exhibit|Transcript|Recording)\s+(?:No\.?|Number|#)"
+    r"^\s*(?:Doc(?:ument)?|Exhibit|Transcript|Recording|File)\s+(?:No\.?|Number|#)"
     r"\s{2,}(?P<description>Description|Title)\b", re.IGNORECASE,
 )
-# Exhibit identifiers are local labels such as H-4(C)-iii; other reports use
-# numeric document numbers. Dates and page numbers must never become records.
-DOCUMENT_NUMBER = re.compile(r"(?:\d+|[A-Z][A-Z0-9()./-]*-\d[A-Z0-9()./-]*)", re.IGNORECASE)
+# Exhibit identifiers include H-4(C)-iii; recordings use SF numbers, and
+# document reports use numeric IDs. Dates and page numbers are not records.
+DOCUMENT_NUMBER = re.compile(r"(?:\d+|SF\d+|[A-Z][A-Z0-9()./-]*-\d[A-Z0-9()./-]*)", re.IGNORECASE)
 
 
 def read_list_pdf(path: Path, matter_number: str, category: str, expected_count: int) -> List[str]:
@@ -51,9 +51,11 @@ def read_list_pdf(path: Path, matter_number: str, category: str, expected_count:
                 continue
             if description_column is None:
                 continue
-            source_id = line[:description_column].strip()
-            if DOCUMENT_NUMBER.fullmatch(source_id) and line[description_column:].strip():
-                identifiers.append(source_id.upper())
+            # Layout extraction can place the first description character one
+            # column before its header, so separate the ID at the whitespace.
+            row = re.match(r"^\s*(\S+)\s{2,}", line[:description_column])
+            if row and DOCUMENT_NUMBER.fullmatch(row.group(1)) and line[description_column:].strip():
+                identifiers.append(row.group(1).upper())
         if description_column is None:
             raise ValueError("Saved list PDF has no recognizable document table")
     if len(identifiers) != expected_count:

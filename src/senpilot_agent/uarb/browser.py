@@ -341,10 +341,14 @@ def _open_category(page: Page, category: str) -> None:
     tab = page.get_by_role(
         "button", name=re.compile(TAB_PATTERN.format(re.escape(category)))
     )
-    tab.click()
+    selected = page.locator(".iwps_button_bar_segment.fm-selected").filter(has=tab)
+    # WebDirect puts a persistent glass pane over the selected tab. A retry
+    # after Save List is already on that tab, so clicking it can never work.
+    if not selected.count():
+        tab.click()
     # The old grid remains mounted briefly while WebDirect changes layouts.
     # Wait for the selected tab before using Save List or the download rows.
-    page.locator(".iwps_button_bar_segment.fm-selected").filter(has=tab).first.wait_for(
+    selected.first.wait_for(
         state="visible", timeout=30000,
     )
     rows = page.locator("tr.v-grid-row[role='row']").filter(

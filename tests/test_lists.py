@@ -51,6 +51,15 @@ class ListTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     read_list_pdf(FIXTURES / "other-documents.pdf", matter_number, category, expected)
 
+    def test_recordings_sound_files_report(self):
+        path = FIXTURES / "recordings.pdf"
+        self.assertEqual(read_list_pdf(path, "M12406", "Recordings", 5),
+                         ["SF07694", "SF07695", "SF07696", "SF07697", "SF07699"])
+        with self.assertRaises(ValueError):
+            read_list_pdf(path, "M12406", "Exhibits", 5)
+        with self.assertRaises(ValueError):
+            read_list_pdf(path, "M12406", "Recordings", 4)
+
     def test_unrecognized_or_empty_report_does_not_become_zero(self):
         reader = MagicMock()
         page = MagicMock()
