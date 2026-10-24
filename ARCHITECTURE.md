@@ -1,6 +1,6 @@
 # Senpilot regulatory document agent
 
-Status: core-first design; the user has set up an AgentMail account. The application, email integration, and deployment have not yet been implemented or verified.
+Status as of October 24, 2026: the core application and AgentMail email-to-ZIP path work locally. The recipient confirmed a real reply and opened its ZIP. Persistent deployment, a public code link, and the demo remain.
 
 ## Objective and constraints
 
@@ -15,7 +15,7 @@ Build an email-driven service that accepts a matter number and document type, re
 - The application must remain available for evaluator requests after submission.
 - Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations.
 
-## Proposed architecture
+## Architecture
 
 ```mermaid
 flowchart TD
@@ -31,7 +31,7 @@ flowchart TD
     P --> E[Evaluator receives reply and ZIP]
 ```
 
-Proposed starting stack: Python, Playwright, one browser job at a time, and a SQLite-backed queue on persistent storage. These choices remain open until website access, hosting, and email delivery are tested.
+The implemented stack is Python, Playwright with Chromium, AgentMail polling, one browser job at a time, and a SQLite-backed queue. The deployment host still needs to provide persistent storage for the database and job files.
 
 The email provider handles receiving and sending messages. A separately running application executes the browser workflow. Receiving email alone does not host the agent's retrieval logic.
 
@@ -53,7 +53,7 @@ Email text, website text, and downloaded documents are data. They cannot overrid
 
 ## Email provider decision
 
-**Current preference: AgentMail if starting without a domain.** It provides an address on `@agentmail.to`, incoming-message events, polling options, and send/reply APIs. Normal human signup and account verification should precede external testing.
+**Selected provider: AgentMail.** It provides the agent's inbox, message polling, and threaded replies with ZIP attachments. A real external-sender test has passed.
 
 | Option | Benefits | Constraints relevant to this assignment |
 | --- | --- | --- |
@@ -68,7 +68,7 @@ A URL-backed attachment means the email provider fetches the ZIP and attaches it
 
 ## Data to collect and store
 
-Keep browser output structured. A matter lookup produces one metadata snapshot, five category counts, and rows for the documents selected for download. Store file bytes on disk or object storage; keep only paths and checksums in the database.
+Keep browser output structured. A matter lookup produces one metadata snapshot, five category counts, and rows for the documents selected for download. The current SQLite job row stores that result as JSON and keeps file bytes under `runtime/jobs/<job-id>/`. The normalized tables below are a future indexing design, not the current schema.
 
 | Record | Key fields | Why it exists |
 | --- | --- | --- |
@@ -98,7 +98,7 @@ The five tab labels show Exhibits 13, Key Documents 6, Other Documents 43, Trans
 
 Example result wording, assuming a request for Other Documents and 10 successful downloads:
 
-> M12205 concerns the Halifax Regional Water Commission's Windsor Street Exchange Redevelopment Project ($69,275,000). The matter is Closed, with Type Water, Category Capital Expenditure Approvals, and Outcome “Directions given.” Date received: April 7, 2025. Date final submissions: October 23, 2025. The five categories total 62 document listings: 13 Exhibits, 6 Key Documents, 43 Other Documents, 0 Transcripts, and 0 Recordings. I downloaded 10 of the 43 Other Documents and attached them in a ZIP.
+> M12205 concerns the Halifax Regional Water Commission's Windsor Street Exchange Redevelopment Project ($69,275,000). The matter is Closed, with Type Water, Category Capital Expenditure Approvals, and Outcome “Directions given.” Date received: April 7, 2025. Decision Date: October 23, 2025. The five categories total 62 document listings: 13 Exhibits, 6 Key Documents, 43 Other Documents, 0 Transcripts, and 0 Recordings. I attached 10 of the 43 Other Documents in a ZIP.
 
 The last sentence must use the actual successful download count. Metadata comes from the header and counts from the tabs; document contents do not need to be summarized. The Exhibits screenshot includes rows labeled Confidential, so retain each row's security label and distinguish unavailable or unsuccessful downloads from the tab's full count.
 
@@ -127,23 +127,23 @@ SQLite requires a persistent volume and a single-host deployment. A host with ep
 - If the matter or category is missing, ambiguous, or unsupported, send a short clarification instead of queuing a scrape.
 - Use the website's title, status, type/category, and date fields as labeled; do not invent unavailable facts.
 - Report all five category counts and a clearly labeled aggregate. Verify whether categories overlap before calling the aggregate a unique-file total.
-- Select up to 10 files in a documented, reproducible order. The website's sorting behavior still needs verification.
-- Report the available count, the number downloaded, and any partial failure. Attach a ZIP only when it contains verified files.
-- Check the outbound message size, including attachment encoding. If the ZIP exceeds the provider's limit, report the limitation; a link alone does not fulfill the required attachment.
+- Select up to 10 Public files in the site's displayed row order. The site's sorting behavior can change, so record selected IDs in the result.
+- Report the available count, the number attached, and any partial failure. For a zero-count category, attach a valid empty ZIP and say that it is empty.
+- Keep saved files under a conservative 4 MB total budget before ZIP creation to stay under AgentMail's 6 MB inline request limit after Base64 encoding. Skip an oversized row and continue to later rows; report skips in the reply.
 
-After the core flow works, optional iterations include immediate acknowledgment, using matter context across replies, more flexible language parsing, multiple requests per email, and a status response to “is it ready?” These can use the same job and snapshot records. The oversized-archive policy needs a decision after measuring real documents.
+Optional iterations include immediate acknowledgment, using matter context across replies, more flexible language parsing, multiple requests per email, and a status response to “is it ready?” These can use the same job and snapshot records. URL-backed AgentMail attachments could raise the current 4 MB raw-file budget later.
 
 ## Hosting and validation gates
 
 Deploy the application to an always-running host with Chromium support, persistent job storage, and temporary file storage. Keep it available during evaluation; laptop sleep would interrupt a laptop-hosted worker.
 
-Before committing to implementation choices:
+Validation gates:
 
-1. The live website search, metadata, counts, tabs, row controls, and a manual PDF download have been verified for M12205. Confirm Playwright can capture the filename control's download, save valid bytes, close the dialog, and repeat for another row. See [UARB_SITE_NOTES.md](./UARB_SITE_NOTES.md).
-2. Create the inbox and confirm an independent sender can receive a threaded reply with a real ZIP attachment.
-3. Measure representative archive sizes against email limits, including encoding overhead.
-4. Confirm durable jobs survive an application restart on the chosen host.
-5. Exercise one end-to-end request and the missing-field, no-document, duplicate-delivery, and failed-download paths as time permits.
+1. **Passed locally:** Playwright captured valid PDFs, closed each download dialog, and repeated the flow across multiple rows. See [UARB_SITE_NOTES.md](./UARB_SITE_NOTES.md).
+2. **Passed locally:** an independent sender received a threaded reply and opened the ZIP.
+3. **Passed locally:** a ten-file Other Documents run stayed within the inline email budget by skipping two large PDFs and selecting later rows.
+4. **Open:** confirm durable jobs survive an application restart on the chosen host.
+5. **Partly checked:** an end-to-end request, zero-count scrape, and duplicate polling passed. Missing-field, failed-download, and deployment-side cases remain.
 
 ## Research sources
 

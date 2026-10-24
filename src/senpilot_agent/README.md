@@ -10,6 +10,6 @@ This is the application's composition layer. `cli.py` exposes direct scraping an
 - Move a job through queued, scraping, downloading, packaging, sending, and completed. Record retry_pending or failed when needed.
 - Expose a CLI path that runs the browser and packaging steps without email, using the same component interfaces as the worker.
 
-The worker stores the scrape result and ZIP path so a failed email send can reuse its archive. A reply is complete after AgentMail accepts it and the outgoing message ID is stored. A live inbound request reached this state on October 24, 2026; recipient-side delivery confirmation is pending.
+The worker stores the scrape result and ZIP path so a failed email send can reuse its archive. A reply is complete after AgentMail accepts it and the outgoing message ID is stored. A live inbound request reached this state on October 24, 2026, and the recipient confirmed the ZIP arrived and opened.
 
 Component guides: [email](./email/README.md), [requests](./requests/README.md), [jobs](./jobs/README.md), [uarb](./uarb/README.md), and [output](./output/README.md).

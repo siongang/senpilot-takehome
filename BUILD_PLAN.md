@@ -2,7 +2,7 @@
 
 This is the execution checklist for the [architecture](./ARCHITECTURE.md). The target is a live email address that accepts one matter number and one document type, downloads up to 10 matching files from the public documents database, and replies with a ZIP plus verified matter metadata and counts.
 
-**Progress on October 24, 2026:** The Python package, SQLite queue, Playwright scraper, ZIP builder, AgentMail adapter, and worker are implemented. Automated runs fetched PDFs from multiple M12205 tabs, including ten Other Documents and a zero-count Transcripts case. One real inbound Key Documents email produced an AgentMail-accepted threaded reply with six PDFs in a ZIP; recipient-side delivery and persistent deployment remain open. The checklist below remains the acceptance plan, not a claim that every item is complete.
+**Progress on October 24, 2026:** The Python package, SQLite queue, Playwright scraper, ZIP builder, AgentMail adapter, and worker are implemented. Automated runs fetched PDFs from multiple M12205 tabs, including ten Other Documents and a zero-count Transcripts case. One real inbound Key Documents email produced a threaded reply with six PDFs in a ZIP; the recipient confirmed it arrived and opened. Persistent deployment, a public code link, and the demo remain open. The checklist below remains the acceptance plan, not a claim that every item is complete.
 
 ## Scope and definition of done
 
@@ -11,12 +11,12 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 ### Required path (P0)
 
 - [ ] An evaluator can email the published agent address from an ordinary external mailbox.
-- [ ] The agent extracts exactly one matter number (`M` plus five digits) and one of Exhibits, Key Documents, Other Documents, Transcripts, or Recordings from that email.
+- [x] The agent extracts exactly one matter number (`M` plus five digits) and one of Exhibits, Key Documents, Other Documents, Transcripts, or Recordings from that email.
 - [x] The worker opens the specified UARB site, searches through **Go Directly to Matter**, and verifies the result is the requested matter.
 - [x] It reads the matter header and the counts on all five document tabs.
 - [x] It opens the requested tab and downloads up to 10 files using **Go Get It**.
 - [x] It creates a valid ZIP containing the files that downloaded successfully.
-- [ ] It replies in the incoming email thread with the ZIP attached, category counts, total listings, key metadata, and the actual number downloaded.
+- [x] It replies in the incoming email thread with the ZIP attached, category counts, total listings, key metadata, and the actual number downloaded.
 - [ ] The agent remains running after submission so the published address works for evaluation.
 - [ ] The submission contains a working code link, the agent email address, and a shareable Loom video under five minutes.
 
@@ -28,12 +28,12 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 - [ ] P2: Reuse matter context across follow-up emails and process multiple requests from one email.
 - [ ] P2: LLM parsing, PDF-content summaries, full document indexing, vector search, and a dashboard.
 
-The first response can be produced from a deterministic template. The screenshots already show the fields needed for the matter summary; reading the PDFs is unnecessary for this requirement.
+The response uses a deterministic template. The matter page provides the fields needed for the summary; reading the PDFs is unnecessary for this requirement.
 
 ## Working choices to avoid setup drift
 
 - **Language/browser:** Python with Playwright and Chromium. Keep selectors and page interactions in one browser module.
-- **Email:** AgentMail is the current preference because it can provide a live `@agentmail.to` address without custom DNS. If provisioning fails quickly, use an available mailbox/provider with both inbound and outbound support. Provider-specific details stay in the email adapter.
+- **Email:** AgentMail provides the live inbox without custom DNS. Provider-specific details stay in the email adapter.
 - **Incoming trigger:** Start with polling if it speeds local development. Run the poller continuously on the final host. A webhook is optional and should not change job or scraper interfaces.
 - **Queue and database:** One SQLite database on persistent storage; the `jobs` table is the queue. Run one browser job at a time.
 - **Files:** Give each job its own temporary directory. Keep downloads and ZIP until delivery succeeds; clean them up through a separate retention policy.
@@ -41,7 +41,7 @@ The first response can be produced from a deterministic template. The screenshot
 - **Document choice:** Use a stable, documented order, initially the order shown on the requested tab. Record each attempted row and whether its **Go Get It** download succeeded.
 - **Response:** Use the site's exact metadata labels and counts. A field that cannot be read is unavailable, not zero. Report the actual ZIP content count.
 
-These are implementation starting points. The live site was inspected and a manual PDF download succeeded; automated retrieval and email-provider behavior still need verification.
+These were implementation starting points. Automated retrieval and a threaded AgentMail reply have since been verified locally. The hosted worker remains to be tested.
 
 ## Three-hour sequence and stop rules
 
@@ -61,35 +61,35 @@ Stop investigating one integration if it consumes its time block without a succe
 
 ## Repository and runtime setup
 
-- [ ] Create the code repository and commit an initial README describing the assignment input and output.
+- [x] Create the local code repository and commit an initial README describing the assignment input and output.
 - [ ] Add Python project dependencies and a reproducible installation command. Pin versions after the first successful run.
 - [ ] Install Playwright's Chromium runtime and verify it launches on the development machine and chosen host.
 - [ ] Add `.env.example` with variable names for email API key, inbox address, database path, working directory, browser mode, and polling interval. Keep real keys out of Git.
-- [ ] Add `.gitignore` for `.env`, local databases, downloads, ZIPs, browser state, and Python caches.
-- [ ] Keep the application runnable with one documented command; avoid separate services unless deployment requires them.
+- [x] Add `.gitignore` for `.env`, local databases, downloads, ZIPs, browser state, and Python caches.
+- [x] Keep the application runnable with one documented command; avoid separate services unless deployment requires them.
 - [ ] Decide early which host supports a persistent database/files and Chromium. Verify its running process will remain available after the demo.
 
 Suggested module boundaries: `email_adapter`, `request_parser`, `job_store`, `uarb_browser`, `archive`, `response_builder`, and a small `worker` entry point. Exact filenames can follow the language and framework chosen during implementation.
 
 ## Email intake and request parsing
 
-- [ ] Create a real inbox and record its address for the final submission.
-- [ ] Confirm mail from an independent mailbox reaches the provider; confirm outgoing mail to that mailbox is allowed.
+- [x] Create a real inbox; its address is stored in local `.env` for the final submission.
+- [x] Confirm mail from an independent mailbox reaches the provider; confirm outgoing mail to that mailbox is allowed.
 - [ ] Receive only incoming user messages; skip messages sent by the agent and automatic replies.
-- [ ] Keep the provider's incoming message ID, sender, subject, current message body, and threading fields needed for a reply.
+- [x] Keep the provider's incoming message ID, sender, subject, current message body, and threading fields needed for a reply.
 - [ ] Strip obvious quoted history and signatures where practical so an old request is not processed again.
-- [ ] Extract a matter number with a case-insensitive `M[0-9]{5}` pattern and normalize it to uppercase.
-- [ ] Match the five canonical categories case-insensitively; match longer names before generic words such as “documents.”
+- [x] Extract a matter number with a case-insensitive `M[0-9]{5}` pattern and normalize it to uppercase.
+- [x] Match the five canonical categories case-insensitively; generic “documents” alone is not a category.
 - [ ] Accept one unambiguous matter/category pair for the first version. If either is absent or conflicting, respond briefly or log the limitation; do not guess and download the wrong matter.
-- [ ] Insert a job with a unique incoming message ID so provider redelivery cannot create duplicate retrieval work.
-- [ ] Prove a reply with a small ZIP reaches an external inbox before depending on the email API for the real archive.
+- [x] Insert a job with a unique incoming message ID so provider redelivery cannot create duplicate retrieval work.
+- [x] Prove a reply with a ZIP reaches an external inbox and the recipient can open it.
 
 ## UARB browser workflow and scrape contract
 
-Target: <https://uarb.novascotia.ca/fmi/webd/UARB15>. Search, header, tabs, counts, row fields, and the zero-count dialog were inspected live for M12205; a manual PDF download succeeded. See [UARB_SITE_NOTES.md](./UARB_SITE_NOTES.md). Automated download capture and repetition still need verification.
+Target: <https://uarb.novascotia.ca/fmi/webd/UARB15>. Search, header, tabs, counts, row fields, and the zero-count dialog were inspected live for M12205. Automated download capture and repetition succeeded for Key Documents and Other Documents. See [UARB_SITE_NOTES.md](./UARB_SITE_NOTES.md).
 
 - [ ] Open the public documents database in a clean browser context.
-- [ ] Fill **Go Directly to Matter**, press **Search**, and wait for the matter detail view.
+- [x] Enter the number in **Go Directly to Matter**, submit through FileMaker's Tab/Search behavior, and wait for the matter detail view.
 - [ ] Read the displayed matter number and fail the lookup if it differs from the request.
 - [ ] Read and retain the raw header values: title/description, status, Type, Category, Date Received, the second date and its displayed label, and Outcome.
 - [ ] Parse dates for formatting, while keeping their exact site labels. The live initial header showed **Decision Date**; document layouts showed **Date Final Submission(s)**. Do not rename either to a closing or approval date.
@@ -133,12 +133,12 @@ For a three-hour build, prioritize a working single-worker queue over elaborate 
 
 ## Verification and demo
 
-- [ ] Run a CLI smoke test for M12205 and one category, confirming the matter header, five counts, and a downloaded file.
-- [ ] Run a full email test from a mailbox other than the agent inbox: send a request, receive the result, open the ZIP, and open at least one document.
-- [ ] Compare the sent email's metadata and counts with the page shown in the browser at test time.
-- [ ] Test a category with fewer than 10 documents, ideally Key Documents, so the “up to 10” rule is visible.
-- [ ] Test a zero-count category, ideally Transcripts or Recordings for the supplied M12205 example.
-- [ ] Redeliver or reprocess one inbound event and confirm no second job/result is created.
+- [x] Run a CLI smoke test for M12205 and multiple categories, confirming the matter header, five counts, and downloaded files.
+- [x] Run a full email test from a mailbox other than the agent inbox: send a request, receive the result, and open the ZIP.
+- [x] Compare the sent email's metadata and counts with the page shown in the browser at test time.
+- [x] Test a category with fewer than 10 documents: Key Documents returned six.
+- [x] Test a zero-count category: M12205 Transcripts returned zero and produced an empty ZIP locally.
+- [x] Poll the inbox again and confirm no second job/result is created for the same incoming message.
 - [ ] Restart the running process and confirm queued work and files remain available.
 - [ ] Test while the local development machine is not hosting the worker; the evaluator address must still work.
 - [ ] Put setup steps, environment variables, run command, architecture summary, demonstrated behavior, and known limitations in README.

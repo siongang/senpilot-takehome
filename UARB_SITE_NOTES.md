@@ -1,6 +1,6 @@
 # UARB live-site inspection notes
 
-Inspected on October 24, 2026 at <https://uarb.novascotia.ca/fmi/webd/UARB15> using matter `M12205`. These are observations from the public FileMaker WebDirect UI, not a guarantee that its generated DOM IDs will remain stable. Use this as the starting point for a Playwright smoke test before implementing the full worker.
+Inspected and automated on October 24, 2026 at <https://uarb.novascotia.ca/fmi/webd/UARB15> using matter `M12205`. These are observations from the public FileMaker WebDirect UI, not a guarantee that its generated DOM IDs will remain stable. Use these notes when maintaining the Playwright browser adapter.
 
 ## Readiness
 
@@ -58,7 +58,7 @@ The Exhibits grid included rows labeled **Confidential** as well as **Public**, 
 
 ## Choosing up to 10 documents
 
-After selecting the requested tab, iterate document **rows**, not the page's global GO GET IT buttons. For each visible row, read the document ID (`.fm_object_201 .text` for Key/Other Documents), title, security label, date and extension. In the first version, select rows labeled **Public** in the order the site displays them, stopping after 10 successful document downloads or when eligible rows are exhausted. Record skipped Confidential rows and failed downloads. A tab count such as `Key Documents - 6` means at most six rows are available in that category; a count such as `Other Documents - 43` means the worker should take at most ten from that category.
+After selecting the requested tab, iterate document **rows**, not the page's global GO GET IT buttons. For each visible row, read the document ID (`.fm_object_201 .text` or `.fm_object_268 .text` on observed Key/Other layouts), title, security label, date and extension. Select rows labeled **Public** in the order the site displays them, stopping after 10 saved documents or when eligible rows are exhausted. The current 4 MB saved-file budget skips larger documents and continues to later rows. Record skipped Confidential and oversized rows and failed downloads. A tab count such as `Key Documents - 6` means at most six rows are available in that category; a count such as `Other Documents - 43` means the worker should attach at most ten from that category.
 
 Click `row.get_by_role("button", name="GO GET IT")` for the current row. In the dialog, read the actual filename from `.fm-download-button`; do not derive it blindly from the document ID because filenames or file types may differ. Click that filename control while capturing the browser download, verify the saved file, then click **Close**. Re-query the grid before selecting the next row because FileMaker can rerender it. The Other Documents grid mounted roughly 12 rows at a time, so scrolling is needed if fewer than 10 eligible/successful rows are available in the initial viewport. If a dialog offers multiple files for one document row, track both the row count and ZIP file count explicitly.
 

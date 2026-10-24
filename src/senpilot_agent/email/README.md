@@ -1,6 +1,6 @@
 # AgentMail adapter
 
-`agentmail.py` is the REST boundary for listing messages, fetching a full message, and replying in its thread with an inline ZIP attachment. A live inbound request was processed on October 24, 2026; AgentMail returned a sent reply in the same thread with a 987 KB ZIP. Recipient-side delivery confirmation is pending.
+`agentmail.py` is the REST boundary for listing messages, fetching a full message, and replying in its thread with an inline ZIP attachment. A live inbound request was processed on October 24, 2026; the reply arrived in the recipient's inbox with a 987 KB ZIP that opened successfully.
 
 ## Input and output
 

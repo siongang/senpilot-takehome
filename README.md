@@ -34,7 +34,7 @@ The browser reads metadata and counts from the UARB matter page, then follows ea
 
 AgentMail limits inline attachment requests to 6 MB. The browser keeps saved files under a conservative 4 MB budget, skipping a file that would exceed it and continuing to later rows. This may yield fewer than ten attachments; the reply reports the actual count. The five tab counts are summed as **category listings**, since a file can appear in more than one tab.
 
-Live browser verification on October 24, 2026 retrieved Key Documents, Other Documents, and Exhibits for `M12205`, with valid PDF signatures and ZIP integrity. A real inbound email for `M12205 Key Documents` completed in one worker cycle: AgentMail accepted a threaded reply with all six Key Documents in a 987 KB ZIP. Actual recipient delivery and an always-running deployment remain to be confirmed.
+Live browser verification on October 24, 2026 retrieved Key Documents, Other Documents, and Exhibits for `M12205`, with valid PDF signatures and ZIP integrity. A real inbound email for `M12205 Key Documents` completed in one worker cycle: all six Key Documents arrived in a 987 KB ZIP, and the recipient opened it successfully. The remaining submission work is persistent hosting, a public code link, and a Loom demo.
 
 ## Project map
 
