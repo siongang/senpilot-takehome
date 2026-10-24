@@ -1,6 +1,7 @@
 """Request interpretation tests use mocked OpenAI responses, never credentials."""
 
 import unittest
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ import httpx
 from openai import APIConnectionError, APIStatusError
 
 from senpilot_agent.config import Settings, load_settings
-from senpilot_agent.requests.parser import RequestParsingError, _Extraction, parse_request
+from senpilot_agent.requests.parser import ClarificationContext, RequestParsingError, _Extraction, parse_request
 
 
 SETTINGS = Settings(Path('/tmp/parser-tests'), True, 10, '', '', '', 15, '', openai_api_key='test-key')
@@ -176,6 +177,47 @@ class ParserTests(unittest.TestCase):
                       ambiguous=True, ambiguity_reason='matter_selection')
         parsed = parse_request('Key Documents for M12205 or M12345?', '')
         self.assertEqual(parsed.error, 'Which matter number would you like me to use: M12205, M12345?')
+
+    def test_followup_supplies_prior_clarification_and_keeps_selected_type(self):
+        self.response(['M12205'], ['Key Documents'])
+        context = ClarificationContext(
+            '', 'Please send Key Documents for M12205 or M12345.',
+            'Which matter number would you like me to use: M12205, M12345?',
+            'M12205', 'Key Documents',
+        )
+        parsed = parse_request('', 'Please use M12205 and send only Key Documents.', context=context)
+        self.assertEqual(parsed.selections, (('M12205', 'Key Documents'),))
+        payload = json.loads(self.parse.call_args.kwargs['input'][0]['content'])
+        self.assertEqual(payload['body'], 'Please use M12205 and send only Key Documents.')
+        self.assertEqual(payload['prior_clarification']['body'], context.body)
+        self.assertEqual(payload['prior_clarification']['question'], context.question)
+
+    def test_short_clarification_answers_inherit_the_original_selection(self):
+        context = ClarificationContext(
+            '', 'Please send Key Documents for M12205 or M12345.',
+            'Which matter number would you like me to use: M12205, M12345?',
+            'M12205', 'Key Documents',
+        )
+        for reply, expected in [('M12205', 'M12205'), ('M12345', 'M12345'), ('the first one', 'M12205')]:
+            with self.subTest(reply=reply):
+                self.assertEqual(parse_request('', reply, context=context).selections,
+                                 ((expected, 'Key Documents'),))
+        self.parse.assert_not_called()
+
+    def test_document_type_clarification_inherits_matter(self):
+        context = ClarificationContext(
+            '', 'Send Exhibits or Transcripts for M12205',
+            'Which document types would you like for M12205? Choose one or more of: Exhibits, Transcripts.',
+            'M12205', 'Exhibits, Transcripts',
+        )
+        self.assertEqual(parse_request('', 'Transcripts', context=context).selections,
+                         (('M12205', 'Transcripts'),))
+        self.parse.assert_not_called()
+
+    def test_followup_still_rejects_unmentioned_matter(self):
+        self.response(['M99999'], ['Key Documents'])
+        context = ClarificationContext('', 'Key Documents for M12205 or M12345?', 'Which matter?')
+        self.assertFalse(parse_request('', 'the first one', context=context).valid)
 
     def test_ambiguous_document_type_gets_specific_question(self):
         self.response(['M12205'], ['Exhibits', 'Transcripts'], ambiguous=True,

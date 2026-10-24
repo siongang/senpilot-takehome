@@ -21,7 +21,7 @@ from senpilot_agent.output.archive import create_zip
 from senpilot_agent.output.response import (
     format_clarification, format_empty, format_failure, format_not_found, format_result,
 )
-from senpilot_agent.requests.parser import RequestParsingError, parse_request
+from senpilot_agent.requests.parser import ClarificationContext, RequestParsingError, parse_request
 from senpilot_agent.uarb.browser import MatterNotFound, scrape_matter
 
 
@@ -157,7 +157,17 @@ class Worker:
                             subject=message.get("subject") or "", body=message_text(message),
                             thread_id=message.get("thread_id"),
                         )
-                    parsed = parse_request(job["subject"], job["body"])
+                    prior = self.store.prior_clarification(job)
+                    if prior:
+                        parsed = parse_request(
+                            job["subject"], job["body"],
+                            context=ClarificationContext(
+                                prior["subject"], prior["body"], prior["parse_error"],
+                                prior["matter_number"] or "", prior["requested_category"] or "",
+                            ),
+                        )
+                    else:
+                        parsed = parse_request(job["subject"], job["body"])
                     if not self.store.save_parse_result(job_id, job["attempts"], parsed):
                         raise LeaseLost(job_id)
                     job = self.store.get(job_id)

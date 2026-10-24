@@ -8,4 +8,6 @@ The output contract remains `ParsedRequest`: matter numbers, a comma-separated c
 
 For ambiguous requests, OpenAI also selects a bounded reason: matter choice, document-type choice, unclear matter/type mapping, or other. Local templates turn that reason into a specific clarification question.
 
+When a sender replies in the same thread to a completed clarification, the worker supplies the saved original request and question to the parser. Short matter or document-type answers are resolved against that saved selection; longer replies go through OpenAI with the same context. Other threads and senders do not inherit it.
+
 See the [request checklist](../../../BUILD_PLAN.md#email-intake-and-request-parsing).

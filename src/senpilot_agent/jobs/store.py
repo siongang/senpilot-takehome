@@ -6,6 +6,7 @@ import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Optional
 
@@ -122,6 +123,27 @@ class JobStore:
     def get(self, job_id: str) -> Optional[dict]:
         row = self.connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+    def prior_clarification(self, job: dict) -> Optional[dict]:
+        """Use only the latest earlier request by this sender in this thread."""
+        thread_id = job.get("thread_id")
+        sender = parseaddr(job.get("sender") or "")[1].lower()
+        if not thread_id or not sender:
+            return None
+        rows = self.connection.execute(
+            """SELECT sender, subject, body, matter_number, requested_category,
+                      parse_error, status, outgoing_message_id
+               FROM jobs WHERE inbox_id=? AND thread_id=? AND created_at < ?
+               ORDER BY created_at DESC, updated_at DESC, id DESC LIMIT 20""",
+            (job["inbox_id"], thread_id, job["created_at"]),
+        )
+        for row in rows:
+            if parseaddr(row["sender"] or "")[1].lower() != sender:
+                continue
+            if row["status"] == "completed" and row["parse_error"] and row["outgoing_message_id"]:
+                return dict(row)
+            return None
+        return None
 
     def has_message(self, inbox_id: str, message_id: str) -> bool:
         return self.connection.execute(

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from senpilot_agent.config import Settings
 from senpilot_agent.models import CATEGORIES, Document, MatterResult
 from senpilot_agent.output.response import format_clarification, format_empty, format_failure, format_not_found, format_result
-from senpilot_agent.requests.parser import ParsedRequest, RequestParsingError
+from senpilot_agent.requests.parser import ClarificationContext, ParsedRequest, RequestParsingError
 from senpilot_agent.worker import Worker
 from senpilot_agent.uarb.browser import MatterNotFound
 
@@ -186,6 +186,57 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
         self.scraper.assert_not_called()
         self.assertIn("Please specify", self.worker.mail.reply.call_args.args[1])
+
+    def test_reply_to_clarification_uses_prior_request_in_same_thread(self):
+        self.message.update({
+            'thread_id': 'thread-1', 'subject': '',
+            'text': 'Please send Key Documents for M12205 or M12345.',
+        })
+        question = 'Which matter number would you like me to use: M12205, M12345?'
+        self.parser.return_value = ParsedRequest('M12205', 'Key Documents', question)
+        self.enqueue()
+        first = self.saved(self.worker.process_next())
+        self.assertEqual(first['status'], 'completed')
+        self.scraper.assert_not_called()
+
+        followup = {
+            **self.message, 'message_id': 'followup', 'subject': '', 'text': 'M12205',
+            'from': 'Person <person@example.com>',
+        }
+        self.parser.return_value = ParsedRequest('M12205', 'Key Documents')
+        self.worker.store.enqueue_unparsed(followup)
+        second = self.saved(self.worker.process_next())
+        self.assertEqual((second['status'], second['requested_category']), ('completed', 'Key Documents'))
+        self.assertEqual(self.scraper.call_args.args[:2], ('M12205', 'Key Documents'))
+        self.assertEqual(self.parser.call_args.kwargs['context'], ClarificationContext(
+            '', 'Please send Key Documents for M12205 or M12345.', question,
+            'M12205', 'Key Documents',
+        ))
+
+    def test_completed_request_does_not_supply_old_clarification_context(self):
+        self.message.update({'thread_id': 'thread-1'})
+        self.enqueue()
+        self.worker.process_next()
+        followup = {**self.message, 'message_id': 'next', 'subject': '', 'text': 'M12205'}
+        self.worker.store.enqueue_unparsed(followup)
+        self.worker.process_next()
+        self.assertEqual(self.parser.call_args.args, ('', 'M12205'))
+        self.assertEqual(self.parser.call_args.kwargs, {})
+
+    def test_clarification_context_is_not_shared_with_another_sender(self):
+        self.message.update({'thread_id': 'thread-1'})
+        self.parser.return_value = ParsedRequest('M12205', 'Exhibits', 'Which matter number?')
+        self.enqueue()
+        self.worker.process_next()
+        followup = {
+            **self.message, 'message_id': 'other-sender', 'subject': '',
+            'text': 'M12205', 'from': 'other@example.com',
+        }
+        self.parser.return_value = ParsedRequest('M12205', '')
+        self.worker.store.enqueue_unparsed(followup)
+        self.worker.process_next()
+        self.assertEqual(self.parser.call_args.args, ('', 'M12205'))
+        self.assertEqual(self.parser.call_args.kwargs, {})
 
     def test_missing_matter_replies_without_zip_on_first_attempt(self):
         self.parser.return_value = ParsedRequest("M99999", "Key Documents")
