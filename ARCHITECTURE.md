@@ -1,6 +1,6 @@
 # Senpilot regulatory document agent
 
-Status as of October 24, 2026: the core application and AgentMail email-to-ZIP path work locally. The recipient confirmed a real reply and opened its ZIP. Persistent deployment, a public code link, and the demo remain.
+Status as of October 24, 2026: the application is running on a DigitalOcean Droplet. A fresh webhook-triggered email request completed with OpenAI parsing, six downloaded PDFs, and a ZIP the recipient confirmed opened. Persistent-volume, restart, backup, and duplicate-delivery checks passed. A stable HTTPS address, whole-host reboot verification, the latest public code, and the demo remain.
 
 ## Objective and constraints
 
@@ -31,7 +31,9 @@ flowchart TD
     P --> E[Evaluator receives reply and ZIP]
 ```
 
-The implemented stack is Python, Playwright with Chromium, AgentMail polling, one browser job at a time, and a SQLite-backed queue. The deployment host still needs to provide persistent storage for the database and job files.
+The implemented stack is Python, Playwright with Chromium, signed AgentMail webhook intake (or optional polling), one browser job at a time, and a SQLite-backed queue. DigitalOcean deployment uses separate receiver/worker containers on one Droplet with a shared persistent volume. The Docker build, hosted ten-file scrape, fresh email acceptance, duplicate intake, and service restart checks passed. Development currently uses a temporary HTTPS tunnel; final hosting needs a stable address.
+
+Webhook intake verifies Svix signatures and queues only incoming-message identities for the configured inbox. The worker fetches the canonical message before parsing; this handles webhook bodies omitted by the provider's size limit and lets fetch failures retry durably. Incoming-message uniqueness deduplicates webhook retries and later polling reconciliation. HTML-only emails use visible text extraction. The receiver does no browser or model work.
 
 The email provider handles receiving and sending messages. A separately running application executes the browser workflow. Receiving email alone does not host the agent's retrieval logic.
 
@@ -145,8 +147,8 @@ Validation gates:
 1. **Passed locally:** Playwright captured valid PDFs, closed each download dialog, and repeated the flow across multiple rows. See [UARB_SITE_NOTES.md](./UARB_SITE_NOTES.md).
 2. **Passed locally:** an independent sender received a threaded reply and opened the ZIP.
 3. **Passed locally:** a ten-file Other Documents run stayed within the inline email budget by skipping two large PDFs and selecting later rows.
-4. **Open:** confirm durable jobs survive an application restart on the chosen host.
-5. **Partly checked:** an end-to-end request, zero-count scrape, and duplicate polling passed. Missing-field, failed-download, and deployment-side cases remain.
+4. **Passed on host:** files survive container replacement; completed job state and its ZIP survive a service restart. A consistent stopped-state backup was copied off the server. Whole-host reboot recovery remains open.
+5. **Passed on host:** a fresh webhook-triggered email completed on the first attempt, its ZIP opened, and signed duplicate intake created no new job or reply. Missing-field and failure cases have automated coverage; corresponding live hosted fault tests remain open.
 
 ## Research sources
 

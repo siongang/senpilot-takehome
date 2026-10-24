@@ -12,6 +12,9 @@ dependencies = [
   "python-dotenv>=1,<2",
   "openai>=1.70,<3",
   "pydantic>=2,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "svix>=1,<2",
 ]
 
 [project.scripts]

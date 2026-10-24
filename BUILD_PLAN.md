@@ -2,7 +2,7 @@
 
 This is the execution checklist for the [architecture](./ARCHITECTURE.md). The target is a live email address that accepts one matter number and one document type, downloads up to 10 matching files from the public documents database, and replies with a ZIP plus verified matter metadata and counts.
 
-**Progress on October 24, 2026:** The Python package, SQLite queue, Playwright scraper, ZIP builder, AgentMail adapter, and worker are implemented. Automated runs fetched PDFs from multiple M12205 tabs, including ten Other Documents and a zero-count Transcripts case. One real inbound Key Documents email produced a threaded reply with six PDFs in a ZIP; the recipient confirmed it arrived and opened. Subsequent work added OpenAI structured request parsing (live parser smoke test passed), modular browser operations with bounded recovery, and durable parsing/lease/retry improvements. The updated worker requires a fresh external email acceptance test. Persistent deployment, public code-link verification, and the demo remain open. Older checklist entries below are the original acceptance plan and may not reflect subsequent implementation; use the code and current README for implementation status.
+**Progress on October 24, 2026:** The updated application is deployed on DigitalOcean with signed webhooks, OpenAI parsing, SQLite persistence, and the browser worker. All 66 tests passed in the deployed Docker image. A hosted ten-file scrape and a fresh six-file Key Documents email succeeded; the recipient confirmed the reply and ZIP opened. Duplicate delivery, container replacement, service restart, ZIP integrity, and backup checks passed. A stable HTTPS address (replacing the temporary development tunnel), whole-host reboot verification, publishing the latest code, and the demo remain. Older checklist entries below are the original acceptance plan and may not reflect subsequent implementation; use the code and current README for implementation status.
 
 ## Scope and definition of done
 
@@ -10,7 +10,7 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 
 ### Required path (P0)
 
-- [ ] An evaluator can email the published agent address from an ordinary external mailbox.
+- [x] An external sender can email the agent address and receive its hosted result.
 - [x] The agent extracts exactly one matter number (`M` plus five digits) and one of Exhibits, Key Documents, Other Documents, Transcripts, or Recordings from that email.
 - [x] The worker opens the specified UARB site, searches through **Go Directly to Matter**, and verifies the result is the requested matter.
 - [x] It reads the matter header and the counts on all five document tabs.
@@ -35,14 +35,14 @@ The response uses a deterministic template. The matter page provides the fields 
 
 - **Language/browser:** Python with Playwright and Chromium. Keep selectors and page interactions in one browser module.
 - **Email:** AgentMail provides the live inbox without custom DNS. Provider-specific details stay in the email adapter.
-- **Incoming trigger:** Start with polling if it speeds local development. Run the poller continuously on the final host. A webhook is optional and should not change job or scraper interfaces.
+- **Incoming trigger:** Signed webhook intake is deployed with a separate queue-only worker. Polling remains available for local development and reconciliation. Hosted registration and a fresh end-to-end email passed; the temporary webhook URL still needs a stable replacement.
 - **Queue and database:** One SQLite database on persistent storage; the `jobs` table is the queue. Run one browser job at a time.
 - **Files:** Give each job its own temporary directory. Keep downloads and ZIP until delivery succeeds; clean them up through a separate retention policy.
 - **Request parsing:** Use OpenAI structured extraction for a matter number and one canonical category from the email subject and current message body; validate locally. Persist intake before parsing so API failures are retryable.
 - **Document choice:** Use a stable, documented order, initially the order shown on the requested tab. Record each attempted row and whether its **Go Get It** download succeeded.
 - **Response:** Use the site's exact metadata labels and counts. A field that cannot be read is unavailable, not zero. Report the actual ZIP content count.
 
-These were implementation starting points. Automated retrieval and a threaded AgentMail reply have since been verified locally. The hosted worker remains to be tested.
+These were implementation starting points. Automated retrieval, threaded replies, OpenAI parsing, and the hosted webhook worker have since passed verification. See the current README for remaining deployment limitations.
 
 ## Three-hour sequence and stop rules
 
@@ -68,7 +68,9 @@ Stop investigating one integration if it consumes its time block without a succe
 - [ ] Add `.env.example` with variable names for email API key, inbox address, database path, working directory, browser mode, and polling interval. Keep real keys out of Git.
 - [x] Add `.gitignore` for `.env`, local databases, downloads, ZIPs, browser state, and Python caches.
 - [x] Keep the application runnable with one documented command; avoid separate services unless deployment requires them.
-- [ ] Decide early which host supports a persistent database/files and Chromium. Verify its running process will remain available after the demo.
+- [x] Select DigitalOcean with a persistent shared runtime volume and Chromium-capable Docker packaging.
+- [x] Verify the Docker build, hosted webhook, external email, and app restart behavior.
+- [ ] Give the webhook a stable HTTPS address and verify whole-host reboot recovery before evaluation.
 
 Suggested module boundaries: `email_adapter`, `request_parser`, `job_store`, `uarb_browser`, `archive`, `response_builder`, and a small `worker` entry point. Exact filenames can follow the language and framework chosen during implementation.
 
@@ -141,7 +143,7 @@ For a three-hour build, prioritize a working single-worker queue over elaborate 
 - [x] Test a zero-count category: M12205 Transcripts returned zero and produced an empty ZIP locally.
 - [x] Poll the inbox again and confirm no second job/result is created for the same incoming message.
 - [ ] Restart the running process and confirm queued work and files remain available.
-- [ ] Test while the local development machine is not hosting the worker; the evaluator address must still work.
+- [x] Test a fresh external email through the hosted worker while the local worker is stopped.
 - [ ] Put setup steps, environment variables, run command, architecture summary, demonstrated behavior, and known limitations in README.
 - [ ] Publish the code repository and open its link from a logged-out or Incognito session.
 - [ ] Record a Loom video under five minutes: request email, job progress, matter data, received reply, ZIP contents, and a brief explanation of one tradeoff or limitation.

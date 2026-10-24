@@ -24,6 +24,10 @@ def main() -> None:
     scrape.add_argument("--headed", action="store_true", help="Show Chromium")
     commands.add_parser("once", help="Poll AgentMail and process one queued job")
     commands.add_parser("run", help="Continuously poll and process jobs")
+    commands.add_parser("work", help="Process persisted jobs without polling AgentMail")
+    serve = commands.add_parser("serve", help="Receive signed AgentMail webhooks")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
     commands.add_parser("status", help="Show recent job states")
     args = parser.parse_args()
     logging.basicConfig(
@@ -31,6 +35,14 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = load_settings()
+
+    if args.command == "serve":
+        import uvicorn
+
+        settings.require_webhook()
+        uvicorn.run("senpilot_agent.webhook:create_app", factory=True,
+                    host=args.host, port=args.port, workers=1)
+        return
 
     if args.command == "scrape":
         folder = settings.runtime_dir / "manual" / str(uuid.uuid4())
@@ -63,6 +75,7 @@ def main() -> None:
             store.close()
         return
 
+    settings.require_openai()
     worker = Worker(settings)
     try:
         if args.command == "once":
@@ -71,7 +84,7 @@ def main() -> None:
             job_id = worker.process_next()
             print("Processed job:", job_id or "none")
         else:
-            worker.run_forever()
+            worker.run_forever(poll_inbox=args.command == "run")
     finally:
         worker.close()
 

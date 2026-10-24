@@ -1,0 +1,83 @@
+name: senpilot
+
+x-app: &app
+  image: senpilot-agent:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  env_file:
+    - ../.env
+  environment:
+    SENPILOT_RUNTIME_DIR: /app/runtime
+    SENPILOT_HEADLESS: "true"
+  volumes:
+    - runtime:/app/runtime
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  web:
+    <<: *app
+    command: ["senpilot-agent", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *app
+    command: ["senpilot-agent", "work"]
+    shm_size: "256mb"
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    environment:
+      SITE_HOSTNAME: ${SITE_HOSTNAME:-}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - 'test -n "$$SITE_HOSTNAME" || { echo "Set SITE_HOSTNAME to your public hostname" >&2; exit 1; }; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["dev-tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://web:8000"]
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  runtime:
+  caddy_data:
+  caddy_config:

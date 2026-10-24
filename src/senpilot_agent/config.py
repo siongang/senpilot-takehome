@@ -30,6 +30,7 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: float = 20.0
     openai_max_retries: int = 2
+    agentmail_webhook_secret: str = ""
 
     @property
     def database_path(self) -> Path:
@@ -38,6 +39,10 @@ class Settings:
     def require_openai(self) -> None:
         if not self.openai_api_key:
             raise ValueError("Missing parser configuration: OPENAI_API_KEY")
+
+    def require_webhook(self) -> None:
+        if not self.agentmail_inbox or not self.agentmail_webhook_secret:
+            raise ValueError("Webhook mode requires AGENTMAIL_INBOX and AGENTMAIL_WEBHOOK_SECRET")
 
     def require_email(self) -> None:
         missing = []
@@ -82,4 +87,5 @@ def load_settings() -> Settings:
         openai_model=openai_model,
         openai_timeout_seconds=openai_timeout,
         openai_max_retries=openai_retries,
+        agentmail_webhook_secret=os.getenv("AGENTMAIL_WEBHOOK_SECRET", "").strip(),
     )

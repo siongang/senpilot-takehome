@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from senpilot_agent.models import utc_now
+from senpilot_agent.email.message import message_text
 from senpilot_agent.requests.parser import ParsedRequest
 
 
@@ -18,6 +19,7 @@ UPDATABLE = {
     "status", "result_json", "zip_path", "last_error", "outgoing_message_id",
     "next_attempt_at", "lease_until", "matter_number", "requested_category", "parse_error",
     "send_started_at", "reply_text",
+    "message_loaded", "sender", "subject", "body", "thread_id",
 }
 LIVE_SQL = "('clarification_pending', 'parsing', 'scraping', 'downloading', 'packaging', 'sending')"
 DUE_SQL = "('queued', 'parse_pending', 'clarification_pending', 'retry_pending')"
@@ -66,6 +68,7 @@ class JobStore:
         try:
             columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(jobs)")}
             for name, definition in {
+                "message_loaded": "INTEGER NOT NULL DEFAULT 1",
                 "send_started_at": "TEXT",
                 "reply_text": "TEXT",
                 "failure_notification_status": "TEXT",
@@ -100,24 +103,29 @@ class JobStore:
         """Persist intake before calling a remote parser, so parsing is retryable."""
         return self.enqueue(message, None)
 
-    def enqueue(self, message: dict, parsed: Optional[ParsedRequest]) -> bool:
+    def enqueue_reference(self, message: dict) -> bool:
+        """Persist webhook identity; the worker fetches canonical content later."""
+        return self.enqueue(message, None, needs_fetch=True)
+
+    def enqueue(self, message: dict, parsed: Optional[ParsedRequest], *, needs_fetch: bool = False) -> bool:
         now = utc_now()
         cursor = self.connection.execute(
             """
             INSERT OR IGNORE INTO jobs (
                 id, inbox_id, message_id, thread_id, sender, subject, body,
-                matter_number, requested_category, parse_error, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                matter_number, requested_category, parse_error, status, created_at, updated_at,
+                message_loaded
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(uuid.uuid4()), message["inbox_id"], message["message_id"], message.get("thread_id"),
                 message.get("from", ""), message.get("subject") or "",
-                message.get("extracted_text") or message.get("text") or "",
+                message_text(message),
                 parsed.matter_number if parsed else None,
                 parsed.document_type if parsed else None,
                 parsed.error if parsed else None,
                 ("queued" if parsed.valid else "clarification_pending") if parsed else "parse_pending",
-                now, now,
+                now, now, 0 if needs_fetch else 1,
             ),
         )
         self.connection.commit()

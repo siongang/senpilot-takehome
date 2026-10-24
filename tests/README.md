@@ -7,8 +7,9 @@ Run `.venv/bin/python -m unittest discover -s tests -v`. Tests mock OpenAI, brow
 - `test_scraper.py`: bounded retries, atomic download cleanup, public-only traversal, size/file limits, zero counts, and diagnostics.
 - `test_jobs.py`: additive migration, reopen persistence, competing claims, lease fencing, crash recovery, retry exhaustion, and separate failure notifications.
 - `test_worker.py`: durable intake/parsing, threaded lease renewal, clarification, terminal failures, exact send retries, and expired-idempotency holds.
+- `test_webhook.py`: real Svix signatures, duplicate/wrong-inbox delivery, request limits, persistence failures, canonical message fetching, HTML-only mail, and queue-only processing.
 
-Live-site and AgentMail smoke runs are recorded in the root [README](../README.md#current-behavior-and-limits). The changed worker still needs a fresh external email acceptance test.
+Live-site and AgentMail smoke runs are recorded in the root [README](../README.md#current-behavior-and-limits). A fresh hosted email acceptance test passed on October 24, 2026.
 
 The most important verification is a live M12205 browser run that captures a PDF from the Download Files dialog, saves it, closes the dialog, and downloads another row. Check the five counts and matter metadata against the page at run time. Then inspect a ZIP and one PDF inside it.
 

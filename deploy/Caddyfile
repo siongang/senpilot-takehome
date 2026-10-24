@@ -1,0 +1,6 @@
+{$SITE_HOSTNAME} {
+    request_body {
+        max_size 1MB
+    }
+    reverse_proxy web:8000
+}

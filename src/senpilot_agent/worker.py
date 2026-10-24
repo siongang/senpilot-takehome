@@ -14,6 +14,7 @@ from typing import Optional
 
 from senpilot_agent.config import Settings
 from senpilot_agent.email.agentmail import AgentMailClient
+from senpilot_agent.email.message import message_text
 from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import MatterResult, utc_now
 from senpilot_agent.output.archive import create_zip
@@ -140,6 +141,20 @@ class Worker:
         try:
             with self._heartbeat(job) as lost:
                 if job["status"] == "parsing":
+                    if not job["message_loaded"]:
+                        message = self.mail.get_message(job["message_id"])
+                        if message.get("message_id") != job["message_id"]:
+                            raise RuntimeError("Provider returned a different incoming message")
+                        if message.get("inbox_id", job["inbox_id"]) != job["inbox_id"]:
+                            raise RuntimeError("Provider returned a different inbox")
+                        if self._ignore_message(message):
+                            self._update(job, status="ignored", lease_until=None)
+                            return job_id
+                        self._update(
+                            job, message_loaded=1, sender=message.get("from") or "",
+                            subject=message.get("subject") or "", body=message_text(message),
+                            thread_id=message.get("thread_id"),
+                        )
                     parsed = parse_request(job["subject"], job["body"])
                     if not self.store.save_parse_result(job_id, job["attempts"], parsed):
                         raise LeaseLost(job_id)
@@ -211,17 +226,21 @@ class Worker:
                 max_attempts=job["failure_notification_attempts"] if isinstance(error, DeliveryNeedsReview) else 3)
         return job["id"]
 
-    def run_forever(self) -> None:
+    def run_forever(self, *, poll_inbox: bool = True) -> None:
         LOG.info("Worker started for inbox %s", self.settings.agentmail_inbox)
         while True:
             try:
-                inserted = self.ingest_recent()
-                if inserted:
-                    LOG.info("Queued %s new request(s)", inserted)
+                if poll_inbox:
+                    try:
+                        inserted = self.ingest_recent()
+                        if inserted:
+                            LOG.info("Queued %s new request(s)", inserted)
+                    except Exception:
+                        LOG.exception("Inbox poll failed; processing persisted jobs")
                 while self.process_next() is not None:
                     pass
                 while self.process_failure_notification() is not None:
                     pass
             except Exception:
                 LOG.exception("Worker poll failed")
-            time.sleep(self.settings.poll_seconds)
+            time.sleep(self.settings.poll_seconds if poll_inbox else 2)

@@ -188,7 +188,7 @@ class JobStoreTests(unittest.TestCase):
         connection = sqlite3.connect(legacy)
         original_columns = [row for row in self.store.connection.execute("PRAGMA table_info(jobs)")
                             if not row["name"].startswith("failure_notification_")
-                            and row["name"] not in {"send_started_at", "reply_text"}]
+                            and row["name"] not in {"send_started_at", "reply_text", "message_loaded"}]
         definitions = [row["name"] + " " + row["type"] for row in original_columns]
         connection.execute("CREATE TABLE jobs ({})".format(", ".join(definitions)))
         connection.execute("INSERT INTO jobs (id, status, attempts) VALUES ('legacy', 'completed', 2)")
@@ -199,6 +199,7 @@ class JobStoreTests(unittest.TestCase):
             try:
                 self.assertEqual(store.get("legacy")["status"], "completed")
                 self.assertEqual(store.get("legacy")["failure_notification_attempts"], 0)
+                self.assertEqual(store.get("legacy")["message_loaded"], 1)
                 if _ == 0:
                     self.assertIsNone(store.get("legacy")["send_started_at"])
                     self.assertIsNone(store.get("legacy")["reply_text"])
