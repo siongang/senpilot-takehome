@@ -108,6 +108,49 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(self.worker.store.enqueue_unparsed(self.message))
         self.assertIsNone(self.worker.process_next())
 
+    def test_different_document_types_per_matter(self):
+        self.parser.return_value = ParsedRequest(
+            'M12205', 'Exhibits', matter_numbers=('M12205', 'M12345'),
+            matter_categories=(('M12205', 'Exhibits'), ('M12345', 'Transcripts')),
+        )
+        self.enqueue()
+        first = self.saved(self.worker.process_next())
+        second = self.saved(self.worker.process_next())
+        self.assertEqual(
+            [(first['matter_number'], first['requested_category']),
+             (second['matter_number'], second['requested_category'])],
+            [('M12205', 'Exhibits'), ('M12345', 'Transcripts')],
+        )
+        self.assertEqual(first['status'], 'completed')
+        self.assertEqual(second['status'], 'completed')
+        self.assertIn('Transcripts', second['reply_text'])
+
+    def test_summary_only_sends_no_zip_or_document_prompt(self):
+        self.parser.return_value = ParsedRequest('M12205', '', summary_only=True)
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(job['summary_only'], 1)
+        self.assertIsNone(job['zip_path'])
+        self.assertNotIn('Would you like me to retrieve', job['reply_text'])
+        self.worker.mail.reply.assert_called_once_with(
+            'incoming', job['reply_text'], zip_path=None, idempotency_key=job['id'])
+
+    def test_summary_only_and_documents_are_separate_matter_jobs(self):
+        self.parser.return_value = ParsedRequest(
+            'M12205', '', matter_numbers=('M12205', 'M12345'),
+            matter_categories=(('M12205', ''), ('M12345', 'Transcripts')),
+            summary_only_matters=('M12205',),
+        )
+        self.enqueue()
+        first = self.saved(self.worker.process_next())
+        second = self.saved(self.worker.process_next())
+        self.assertEqual([(first['summary_only'], first['zip_path']),
+                          (second['summary_only'], bool(second['zip_path']))],
+                         [(1, None), (0, True)])
+        self.assertEqual(self.scraper.call_args_list[0].args[1], '')
+        self.assertEqual(self.scraper.call_args_list[1].args[1], 'Transcripts')
+
     def test_first_matter_failure_does_not_block_second(self):
         self.multiple()
         self.scraper.side_effect = lambda matter, *args, **kwargs: (self.result(matter, *args, **kwargs)

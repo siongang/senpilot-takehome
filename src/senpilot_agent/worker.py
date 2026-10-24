@@ -191,7 +191,10 @@ class Worker:
                 sender = job.get("sender") or ""
                 categories = split_categories(result.requested_category)
                 if not categories:
-                    self._send(job, format_result(result, 0, sender, attachment_line=""), None, lost)
+                    self._send(job, format_result(
+                        result, 0, sender, attachment_line="",
+                        ask_for_documents=not bool(job.get("summary_only")),
+                    ), None, lost)
                     return job_id
                 zip_path = Path(job["zip_path"]) if job["zip_path"] else None
                 if zip_path is None or not zip_path.is_file():

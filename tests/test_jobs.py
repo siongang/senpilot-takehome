@@ -151,6 +151,30 @@ class JobStoreTests(unittest.TestCase):
         self.assertFalse(self.store.enqueue(self.message, self.batch()))
         self.assertEqual(len(self.store.recent()), 2)
 
+    def test_direct_enqueue_preserves_per_matter_categories(self):
+        parsed = ParsedRequest(
+            'M12205', 'Exhibits', matter_numbers=('M12205', 'M12345'),
+            matter_categories=(('M12205', 'Exhibits'), ('M12345', 'Transcripts')),
+        )
+        self.assertTrue(self.store.enqueue(self.message, parsed))
+        rows = self.store.connection.execute(
+            'SELECT matter_number, requested_category FROM jobs ORDER BY request_index'
+        ).fetchall()
+        self.assertEqual([tuple(row) for row in rows],
+                         [('M12205', 'Exhibits'), ('M12345', 'Transcripts')])
+
+    def test_direct_enqueue_preserves_summary_only_per_matter(self):
+        parsed = ParsedRequest(
+            'M12205', '', matter_numbers=('M12205', 'M12345'),
+            matter_categories=(('M12205', ''), ('M12345', 'Transcripts')),
+            summary_only_matters=('M12205',),
+        )
+        self.assertTrue(self.store.enqueue(self.message, parsed))
+        rows = self.store.connection.execute(
+            'SELECT summary_only FROM jobs ORDER BY request_index'
+        ).fetchall()
+        self.assertEqual([row['summary_only'] for row in rows], [1, 0])
+
     def test_atomic_fanout_survives_reopen_and_stale_parse(self):
         self.store.enqueue_unparsed(self.message)
         job = self.store.claim_next()

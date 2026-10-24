@@ -26,12 +26,15 @@ class ParserTests(unittest.TestCase):
         self.addCleanup(self.settings_patch.stop)
         self.addCleanup(self.client_patch.stop)
 
-    def response(self, matters, categories, ambiguous=False, ambiguity_reason='none'):
+    def response(self, matters, categories, ambiguous=False, ambiguity_reason='none',
+                 per_matter=None, summary_only=False):
+        mapped = [dict({'summary_only': False}, **item) for item in (per_matter or [])]
         self.parse.return_value = SimpleNamespace(
             status='completed',
             output_parsed=_Extraction(
                 matter_numbers=matters, document_types=categories, ambiguous=ambiguous,
-                ambiguity_reason=ambiguity_reason,
+                ambiguity_reason=ambiguity_reason, matter_document_types=mapped,
+                summary_only=summary_only,
             ),
         )
 
@@ -67,6 +70,24 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(parsed.valid)
         self.assertEqual(parsed.document_type, '')
         self.assertEqual(parsed.matters, ('M12205',))
+        self.assertFalse(parsed.wants_summary_only('M12205'))
+
+    def test_count_question_is_summary_only_even_when_category_is_mentioned(self):
+        self.response(['M12205'], ['Exhibits'], summary_only=True)
+        parsed = parse_request('Exhibit count', 'How many Exhibits are there for M12205? Do not send files.')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.selections, (('M12205', ''),))
+        self.assertTrue(parsed.wants_summary_only('M12205'))
+
+    def test_summary_and_download_can_differ_by_matter(self):
+        self.response(['M12205', 'M12345'], [], per_matter=[
+            {'matter_number': 'M12205', 'document_types': ['Exhibits'], 'summary_only': True},
+            {'matter_number': 'M12345', 'document_types': ['Transcripts']},
+        ])
+        parsed = parse_request('M12205 and M12345', 'Count exhibits for M12205; send transcripts for M12345')
+        self.assertEqual(parsed.selections, (('M12205', ''), ('M12345', 'Transcripts')))
+        self.assertTrue(parsed.wants_summary_only('M12205'))
+        self.assertFalse(parsed.wants_summary_only('M12345'))
 
     def test_multiple_matters_share_one_category(self):
         self.response(['M12205', 'M12345'], ['Exhibits'])
@@ -107,12 +128,48 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.matters, ('M12205', 'M12345'))
         self.assertEqual(parsed.document_type, 'Exhibits, Transcripts')
 
-    def test_different_types_per_matter_stay_ambiguous_when_the_model_says_so(self):
-        self.response(['M12205', 'M12345'], ['Exhibits', 'Transcripts'],
-                      ambiguous=True, ambiguity_reason='matter_document_mapping')
+    def test_different_types_per_matter_are_kept_separate(self):
+        self.response(['M12205', 'M12345'], [], per_matter=[
+            {'matter_number': 'M12205', 'document_types': ['Exhibits']},
+            {'matter_number': 'M12345', 'document_types': ['Transcripts']},
+        ])
+        parsed = parse_request('M12205 exhibits; M12345 transcripts', '')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.selections, (('M12205', 'Exhibits'), ('M12345', 'Transcripts')))
+
+    def test_redundant_shared_mapping_without_matter_numbers_is_normalized(self):
+        self.response([], ['Key Documents'], per_matter=[
+            {'matter_number': 'M12205', 'document_types': ['Key Documents']},
+            {'matter_number': 'M12345', 'document_types': ['Key Documents']},
+        ])
+        parsed = parse_request('Shared documents', 'Send Key Documents for M12205 and M12345')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.selections, (
+            ('M12205', 'Key Documents'), ('M12345', 'Key Documents'),
+        ))
+
+    def test_conflicting_shared_and_per_matter_types_require_clarification(self):
+        self.response(['M12205', 'M12345'], ['Key Documents'], per_matter=[
+            {'matter_number': 'M12205', 'document_types': ['Key Documents']},
+            {'matter_number': 'M12345', 'document_types': ['Transcripts']},
+        ])
+        parsed = parse_request('M12205 and M12345', 'Send Key Documents for M12205 and Transcripts for M12345')
+        self.assertFalse(parsed.valid)
+
+    def test_incomplete_per_matter_mapping_requires_clarification(self):
+        self.response(['M12205', 'M12345'], [], per_matter=[
+            {'matter_number': 'M12205', 'document_types': ['Exhibits']},
+        ])
         parsed = parse_request('M12205 exhibits; M12345 transcripts', '')
         self.assertFalse(parsed.valid)
-        self.assertIn('send separate emails for different selections', parsed.error)
+        self.assertIn('which document types', parsed.error)
+
+    def test_all_documents_is_a_clear_request_for_five_types(self):
+        self.response(['M12205'], list(('Exhibits', 'Key Documents', 'Other Documents', 'Transcripts', 'Recordings')))
+        parsed = parse_request('All documents for M12205', '')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.selections[0][1],
+                         'Exhibits, Key Documents, Other Documents, Transcripts, Recordings')
 
     def test_ambiguous_matter_gets_specific_question(self):
         self.response(['M12205', 'M12345'], ['Key Documents'],
@@ -121,8 +178,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.error, 'Which matter number would you like me to use: M12205, M12345?')
 
     def test_ambiguous_document_type_gets_specific_question(self):
-        self.response(['M12205'], [], ambiguous=True, ambiguity_reason='document_selection')
-        parsed = parse_request('Send all documents for M12205', '')
+        self.response(['M12205'], ['Exhibits', 'Transcripts'], ambiguous=True,
+                      ambiguity_reason='document_selection')
+        parsed = parse_request('Send Exhibits or Transcripts for M12205', '')
         self.assertIn('Which document types would you like for M12205?', parsed.error)
         self.assertIn('Exhibits, Key Documents', parsed.error)
 
@@ -158,7 +216,7 @@ class ParserTests(unittest.TestCase):
     def test_invalid_structured_output_is_operational_failure(self):
         self.parse.return_value = SimpleNamespace(status='completed', output_parsed={
             'matter_numbers': ['M12205'], 'document_types': ['Unknown'], 'ambiguous': False,
-            'ambiguity_reason': 'none',
+            'ambiguity_reason': 'none', 'matter_document_types': [], 'summary_only': False,
         })
         with self.assertRaises(RequestParsingError):
             parse_request('M12205', 'Exhibits')

@@ -20,7 +20,7 @@ UPDATABLE = {
     "status", "result_json", "zip_path", "last_error", "outgoing_message_id",
     "next_attempt_at", "lease_until", "matter_number", "requested_category", "parse_error",
     "send_started_at", "reply_text",
-    "message_loaded", "sender", "subject", "body", "thread_id",
+    "message_loaded", "sender", "subject", "body", "thread_id", "summary_only",
 }
 LIVE_SQL = "('clarification_pending', 'parsing', 'scraping', 'downloading', 'packaging', 'sending')"
 DUE_SQL = "('queued', 'parse_pending', 'clarification_pending', 'retry_pending')"
@@ -48,6 +48,7 @@ class JobStore:
                 body TEXT NOT NULL,
                 matter_number TEXT,
                 requested_category TEXT,
+                summary_only INTEGER NOT NULL DEFAULT 0,
                 parse_error TEXT,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -74,6 +75,7 @@ class JobStore:
                 "request_index": "INTEGER NOT NULL DEFAULT 0",
                 "parent_job_id": "TEXT",
                 "message_loaded": "INTEGER NOT NULL DEFAULT 1",
+                "summary_only": "INTEGER NOT NULL DEFAULT 0",
                 "send_started_at": "TEXT",
                 "reply_text": "TEXT",
                 "failure_notification_status": "TEXT",
@@ -137,20 +139,22 @@ class JobStore:
     def enqueue(self, message: dict, parsed: Optional[ParsedRequest], *, needs_fetch: bool = False) -> bool:
         now = utc_now()
         job_id = str(uuid.uuid4())
+        selections = parsed.selections if parsed and parsed.valid else ()
         cursor = self.connection.execute(
             """
             INSERT OR IGNORE INTO jobs (
                 id, inbox_id, message_id, thread_id, sender, subject, body,
-                matter_number, requested_category, parse_error, status, created_at, updated_at,
+                matter_number, requested_category, summary_only, parse_error, status, created_at, updated_at,
                 message_loaded
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, message["inbox_id"], message["message_id"], message.get("thread_id"),
                 message.get("from", ""), message.get("subject") or "",
                 message_text(message),
-                (parsed.matters[0] if parsed.matters else parsed.matter_number) if parsed else None,
-                parsed.document_type if parsed else None,
+                selections[0][0] if selections else parsed.matter_number if parsed else None,
+                selections[0][1] if selections else parsed.document_type if parsed else None,
+                int(parsed.wants_summary_only(selections[0][0])) if selections else 0,
                 parsed.error if parsed else None,
                 ("queued" if parsed.valid else "clarification_pending") if parsed else "parse_pending",
                 now, now, 0 if needs_fetch else 1,
@@ -158,8 +162,7 @@ class JobStore:
         )
         try:
             if cursor.rowcount == 1 and parsed and parsed.valid:
-                self._insert_matter_jobs(self.get(job_id), job_id,
-                                         tuple(dict.fromkeys(parsed.matters)), parsed.document_type, now)
+                self._insert_matter_jobs(self.get(job_id), job_id, selections, now, parsed)
             self.connection.commit()
         except Exception:
             self.connection.rollback()
@@ -230,32 +233,35 @@ class JobStore:
             if row is None:
                 self.connection.rollback()
                 return False
-            matters = tuple(dict.fromkeys(parsed.matters)) if parsed.valid else ()
-            first = matters[0] if matters else parsed.matter_number
+            selections = parsed.selections if parsed.valid else ()
+            first = selections[0][0] if selections else parsed.matter_number
+            first_category = selections[0][1] if selections else parsed.document_type
             self.connection.execute(
-                """UPDATE jobs SET matter_number=?, requested_category=?, parse_error=?,
+                """UPDATE jobs SET matter_number=?, requested_category=?, summary_only=?, parse_error=?,
                     status=?, updated_at=? WHERE id=?""",
-                (first, parsed.document_type, parsed.error,
+                (first, first_category, int(parsed.wants_summary_only(first)) if parsed.valid else 0,
+                 parsed.error,
                  "scraping" if parsed.valid else "clarification_pending", now, job_id),
             )
-            self._insert_matter_jobs(row, job_id, matters, parsed.document_type, now)
+            self._insert_matter_jobs(row, job_id, selections, now, parsed)
             self.connection.commit()
             return True
         except Exception:
             self.connection.rollback()
             raise
 
-    def _insert_matter_jobs(self, row, job_id, matters, category, now) -> None:
+    def _insert_matter_jobs(self, row, job_id, selections, now, parsed) -> None:
         """Insert siblings inside the caller's transaction, never commit here."""
-        for index, matter in enumerate(matters[1:], start=1):
+        for index, (matter, category) in enumerate(selections[1:], start=1):
             self.connection.execute(
                 """INSERT INTO jobs (
                     id, inbox_id, message_id, thread_id, sender, subject, body,
-                    matter_number, requested_category, status, created_at, updated_at,
+                    matter_number, requested_category, summary_only, status, created_at, updated_at,
                     message_loaded, request_index, parent_job_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?)""",
                 (str(uuid.uuid4()), row["inbox_id"], row["message_id"], row["thread_id"],
                  row["sender"], row["subject"], row["body"], matter, category,
+                 int(parsed.wants_summary_only(matter)),
                  now, now, index, job_id),
             )
 

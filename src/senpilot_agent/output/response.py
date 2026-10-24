@@ -122,6 +122,7 @@ def format_result(
     attached_count: int,
     sender: str = "",
     attachment_line: str | None = None,
+    ask_for_documents: bool = True,
 ) -> str:
     headline, description = _title_parts(result.title)
     requested = set(_requested_names(result))
@@ -148,7 +149,7 @@ def format_result(
     for name in CATEGORIES:
         marker = " (requested)" if name in requested else ""
         detail.append("{}: {}{}".format(name, result.category_counts[name], marker))
-    if not requested:
+    if not requested and ask_for_documents:
         detail.extend(["", (
             "I have not retrieved any files. Would you like me to retrieve any document types for {}? "
             "Reply with the matter number and one or more of: {}."

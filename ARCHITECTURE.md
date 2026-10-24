@@ -11,7 +11,7 @@ Build an email-driven service that accepts a matter number and document type, re
 - Supported categories: Exhibits, Key Documents, Other Documents, Transcripts, Recordings.
 - Matter numbers have the form `M` followed by five digits, such as `M12205`.
 - The reply must report category counts across the matter, even though downloads come from one requested category.
-- The agent handles one or more matters and any number of the supported categories per incoming email. The same categories apply to every matter. It sends one separate result email per distinct matter. A request with no document type receives the summary, no ZIP, and a question asking which document types to retrieve.
+- The agent handles one or more matters and any number of the supported categories per incoming email. Categories can be shared across matters or selected separately for each matter. It sends one separate result email per distinct matter. An explicit request to send all documents selects all five supported categories. A question asking only for facts or counts receives a summary without files; a bare matter number receives the same summary plus a question about which document types to retrieve.
 - The application must remain available for evaluator requests after submission.
 - Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations. OpenAI request parsing is now implemented.
 
@@ -79,7 +79,7 @@ Keep browser output structured. A matter lookup produces one metadata snapshot, 
 | `category_counts` | `snapshot_id`, category, nullable count, observation status | Exactly five category observations. `NULL` means unavailable; `0` means the site showed none. |
 | `documents` | `job_id`, source document ID if visible, title, security label, date filed, extension, displayed position, download status, saved path, byte size, checksum, error | Tracks the selected documents and confirms what went into the ZIP. |
 
-Every nonempty category now exports its Save List PDF. The scraper stores `document_ids_by_category` and `list_pdf_paths` in the result JSON, validates each report against the requested matter/category and tab count, and counts distinct document/exhibit numbers across the complete inventory. Zero-count tabs contribute empty lists. Only the requested category's Public attachments are downloaded, up to the file and size limits. Report PDFs are retained separately and excluded from the ZIP. A listed document may offer multiple attachments, and records with different numbers may be aliases; these reports establish a document-number count rather than a unique-binary count.
+Every nonempty category now exports its Save List PDF. The scraper stores `document_ids_by_category` and `list_pdf_paths` in the result JSON, validates each report against the requested matter/category and tab count, and counts distinct document/exhibit numbers across the complete inventory. Zero-count tabs contribute empty lists. Only the requested categories' Public attachments are downloaded, up to the file and size limits. Report PDFs are retained separately and excluded from the ZIP. A listed document may offer multiple attachments, and records with different numbers may be aliases; these reports establish a document-number count rather than a unique-binary count.
 
 ### What the supplied M12205 screenshots and live page show
 
