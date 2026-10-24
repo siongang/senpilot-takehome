@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+.venv/
+.git/
+runtime/
+__pycache__/
+*.egg-info/
+*.py[cod]
