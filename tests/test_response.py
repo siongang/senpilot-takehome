@@ -39,10 +39,19 @@ class ResponseTests(unittest.TestCase):
         self.assertIn("Total documents in this matter: 1.", body)
         self.assertIn("including confidential records", body)
         self.assertIn("may contain multiple files", body)
-        self.assertIn("These five tabs show 2 listings.", body)
+        self.assertIn("These five tabs show 2 listings of 1 document.", body)
+        self.assertNotIn("not a count of unique files", body)
         self.assertIn("The ZIP contains 1 file", body)
+        distinct = _matter(
+            "Key Documents", _counts(**{"Key Documents": 1, "Other Documents": 1}), _downloaded(1),
+        )
+        distinct.document_ids_by_category = {name: [] for name in CATEGORIES}
+        distinct.document_ids_by_category.update({"Key Documents": ["97289"], "Other Documents": ["102674"]})
+        self.assertIn("These five tabs show 2 documents.", format_result(distinct, 1))
         result.document_ids_by_category = None
-        self.assertIn("Total documents in this matter: unavailable", format_result(result, 1))
+        unavailable = format_result(result, 1)
+        self.assertIn("Total documents in this matter: unavailable", unavailable)
+        self.assertIn("not a count of unique files", unavailable)
 
     def test_one_file_uses_singular_wording(self):
         title = (

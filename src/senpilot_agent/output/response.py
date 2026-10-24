@@ -59,11 +59,20 @@ def _title_parts(title: str) -> tuple[str, str]:
     return lines[0], "\n".join(lines[1:])
 
 
-def _listing_summary(total: int) -> str:
-    return (
-        "These five tabs show {}. The same document can appear on more than one tab, "
-        "so this is not a count of unique files."
-    ).format(_plural(total, "listing"))
+def _listing_summary(result: MatterResult) -> str:
+    """State the tab total in documents once the saved lists have been deduplicated."""
+    listings = result.listing_total
+    documents = result.document_total
+    if documents is None:
+        return (
+            "These five tabs show {}. The same document can appear on more than one tab, "
+            "so this is not a count of unique files."
+        ).format(_plural(listings, "listing"))
+    if listings == documents:
+        return "These five tabs show {}.".format(_plural(documents, "document"))
+    return "These five tabs show {} of {}.".format(
+        _plural(listings, "listing"), _plural(documents, "document"),
+    )
 
 
 def _document_total(result: MatterResult) -> str:
@@ -132,7 +141,7 @@ def format_result(
         detail.append("{}: {}{}".format(name, result.category_counts[name], requested))
     detail.extend([
         "",
-        _listing_summary(result.listing_total),
+        _listing_summary(result),
         "",
         attachment_line if attachment_line is not None else _attachment_line(result, attached_count),
     ])
