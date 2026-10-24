@@ -135,7 +135,7 @@ SQLite requires a persistent volume and a single-host deployment. A host with ep
 - Report the distinct document/exhibit-number total from validated Save List PDFs for every nonempty category, including confidential records. Retry failed or incomplete exports rather than publishing a partial total. Preserve existing reply text when retrying an uncertain delivery.
 - Select up to 10 Public files in the site's displayed row order. The site's sorting behavior can change, so record selected IDs in the result.
 - Report the available count, the number attached, and any partial failure. For a zero-count category, attach a valid empty ZIP and say that it is empty.
-- Keep saved files under a conservative 4 MB total budget before ZIP creation to stay under AgentMail's 6 MB inline request limit after Base64 encoding. Skip an oversized row and continue to later rows; report skips in the reply.
+- Keep saved files under a conservative 4 MB total budget before ZIP creation to stay under AgentMail's 6 MB inline request limit after Base64 encoding. The email worker stops an oversized or stalled transfer and sends a clear no-ZIP reply so later jobs can proceed.
 
 Optional iterations include immediate acknowledgment, using matter context across replies, more flexible language parsing, different document types for different matters in one email, and a status response to “is it ready?” These can use the same job and snapshot records. URL-backed AgentMail attachments could raise the current 4 MB raw-file budget later.
 

@@ -185,6 +185,18 @@ class ScraperTests(unittest.TestCase):
             self.assertEqual(list(Path(folder).iterdir()), [])
             self.assertEqual(item.saved_paths, [])
 
+    def test_download_start_timeout_stops_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = MagicMock()
+            controls = page.locator.return_value
+            controls.count.return_value = 1
+            controls.nth.return_value.inner_text.return_value = "video.mp4"
+            page.expect_download.return_value.__enter__.side_effect = PlaywrightTimeout("slow")
+            with patch.object(browser, "_close_download_dialog"):
+                with self.assertRaisesRegex(browser.DownloadLimitExceeded, "too long"):
+                    browser._download_row(page, document(), Path(folder))
+            page.expect_download.assert_called_once_with(timeout=30000)
+
     def test_multi_file_row_honors_remaining_file_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             page = MagicMock()
@@ -367,7 +379,7 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(result.documents[0].status, "skipped")
         self.assertEqual(download.call_count, 2)
 
-    def test_attachment_budget_removes_only_over_budget_row(self):
+    def test_attachment_budget_stops_request(self):
         result = matter(2)
 
         def save(page, item, folder, **kwargs):
@@ -382,12 +394,11 @@ class ScraperTests(unittest.TestCase):
         ), patch.object(browser, "_download_row", side_effect=save), patch.object(
             browser, "MAX_SAVED_BYTES", 9
         ):
-            browser._collect_documents(MagicMock(), result, Path(folder), 10)
+            with self.assertRaises(browser.DownloadLimitExceeded):
+                browser._collect_documents(MagicMock(), result, Path(folder), 10)
             self.assertTrue((Path(folder) / "1.pdf").exists())
-            self.assertFalse((Path(folder) / "2.pdf").exists())
-        self.assertEqual(result.documents[1].status, "skipped")
-        self.assertEqual(result.documents[1].saved_paths, [])
-        self.assertIn("budget", result.documents[1].error)
+            self.assertTrue((Path(folder) / "2.pdf").exists())
+        self.assertEqual(len(result.documents), 2)
 
     def test_failed_row_is_reported_once_and_following_row_continues(self):
         result = matter(2)

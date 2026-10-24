@@ -19,10 +19,12 @@ from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import MatterResult, split_categories, utc_now
 from senpilot_agent.output.archive import create_zip
 from senpilot_agent.output.response import (
-    format_clarification, format_empty, format_failure, format_not_found, format_result,
+    format_clarification, format_empty, format_failure, format_limit, format_not_found,
+    format_result,
 )
 from senpilot_agent.requests.parser import ClarificationContext, RequestParsingError, parse_request
-from senpilot_agent.uarb.browser import MatterNotFound, scrape_matter
+from senpilot_agent.uarb.browser import DownloadLimitExceeded, MatterNotFound
+from senpilot_agent.uarb.supervisor import supervised_scrape_matter
 
 
 LOG = logging.getLogger(__name__)
@@ -187,12 +189,18 @@ class Worker:
                 else:
                     self._update(job, status="downloading")
                     try:
-                        result = scrape_matter(
+                        result = supervised_scrape_matter(
                             job["matter_number"], job["requested_category"], folder / ("downloads-attempt-{}".format(job["attempts"])),
                             max_documents=self.settings.max_documents, headless=self.settings.headless,
                         )
                     except MatterNotFound:
                         self._send(job, format_not_found(job["matter_number"], job.get("sender") or ""), None, lost)
+                        return job_id
+                    except DownloadLimitExceeded as error:
+                        self._send(job, format_limit(
+                            job["matter_number"], job["requested_category"],
+                            str(error), job.get("sender") or "",
+                        ), None, lost)
                         return job_id
                     if not result.saved_files and any(item.status == "failed" for item in result.documents):
                         raise RuntimeError("No selected public documents could be downloaded")

@@ -11,7 +11,7 @@ from senpilot_agent.models import CATEGORIES, Document, MatterResult
 from senpilot_agent.output.response import format_clarification, format_empty, format_failure, format_not_found, format_result
 from senpilot_agent.requests.parser import ClarificationContext, ParsedRequest, RequestParsingError
 from senpilot_agent.worker import Worker
-from senpilot_agent.uarb.browser import MatterNotFound
+from senpilot_agent.uarb.browser import DownloadLimitExceeded, MatterNotFound
 
 
 PAST = "2000-01-01T00:00:00+00:00"
@@ -30,7 +30,7 @@ class WorkerTests(unittest.TestCase):
         self.message = {"inbox_id": "agent@example.com", "message_id": "incoming", "from": "person@example.com", "subject": "M12205 exhibits", "text": "Please send exhibits"}
         self.parse = patch("senpilot_agent.worker.parse_request", return_value=ParsedRequest("M12205", "Exhibits"))
         self.parser = self.parse.start()
-        self.scrape = patch("senpilot_agent.worker.scrape_matter", side_effect=self.result)
+        self.scrape = patch("senpilot_agent.worker.supervised_scrape_matter", side_effect=self.result)
         self.scraper = self.scrape.start()
 
     def tearDown(self):
@@ -292,6 +292,28 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["attempts"], 1)
         self.scraper.assert_not_called()
+
+    def test_oversized_download_gets_immediate_explanation(self):
+        self.scraper.side_effect = DownloadLimitExceeded(
+            "Requested files exceed the email attachment size limit"
+        )
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["attempts"], 1)
+        self.assertIsNone(job["zip_path"])
+        self.assertIn("size limit", job["reply_text"])
+        self.assertIn("did not send a ZIP", job["reply_text"])
+        self.assertIsNone(self.worker.process_failure_notification())
+
+    def test_slow_download_gets_immediate_explanation(self):
+        self.scraper.side_effect = DownloadLimitExceeded(
+            "A requested file took too long to download"
+        )
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.assertIn("too long", job["reply_text"])
 
     def test_scrape_failure_exhausts_and_notifies_separately(self):
         self.scraper.side_effect = RuntimeError("Navigation failed")

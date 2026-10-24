@@ -11,7 +11,7 @@ from senpilot_agent.config import load_settings
 from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import CATEGORIES
 from senpilot_agent.output.archive import create_zip
-from senpilot_agent.uarb.browser import scrape_matter
+from senpilot_agent.uarb.supervisor import supervised_scrape_matter
 from senpilot_agent.worker import Worker
 
 
@@ -46,7 +46,7 @@ def main() -> None:
 
     if args.command == "scrape":
         folder = settings.runtime_dir / "manual" / str(uuid.uuid4())
-        result = scrape_matter(
+        result = supervised_scrape_matter(
             args.matter_number,
             args.document_type,
             folder / "downloads",

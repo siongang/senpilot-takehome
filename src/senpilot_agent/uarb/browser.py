@@ -24,6 +24,12 @@ class MatterNotFound(RuntimeError):
     pass
 
 
+class DownloadLimitExceeded(RuntimeError):
+    """A requested file cannot fit within the email attachment budget."""
+
+    pass
+
+
 def _text(page: Page, selector: str) -> str:
     return page.locator(selector).first.inner_text(timeout=10000).strip()
 
@@ -237,6 +243,7 @@ def _validate_file(destination: Path) -> None:
 
 def _download_row(page: Page, document: Document, folder: Path, *, max_files: int = 10) -> None:
     """Save a row atomically: failures remove every file from this attempt."""
+    folder.mkdir(parents=True, exist_ok=True)
     saved: List[Path] = []
     try:
         rows = page.locator("tr.v-grid-row[role='row']")
@@ -267,15 +274,27 @@ def _download_row(page: Page, document: Document, folder: Path, *, max_files: in
             offered_name = control.inner_text().strip()
             if not offered_name:
                 continue
-            with page.expect_download(timeout=60000) as event:
-                control.click(timeout=10000)
+            try:
+                with page.expect_download(timeout=30000) as event:
+                    control.click(timeout=10000)
+            except PlaywrightTimeout as error:
+                raise DownloadLimitExceeded(
+                    "A requested file took too long to start downloading"
+                ) from error
             download = event.value
+            destination = _unique_path(folder, download.suggested_filename or offered_name)
+            saved.append(destination)
+            marker = folder / ".active-download"
+            marker.write_text(destination.name, encoding="utf-8")
+            try:
+                # save_as can write while the transfer is in progress. The
+                # supervisor watches this path and stops oversized transfers.
+                download.save_as(destination)
+            finally:
+                marker.unlink(missing_ok=True)
             failure = download.failure()
             if failure:
                 raise DownloadError("Download failed for {}: {}".format(document.source_id, failure))
-            destination = _unique_path(folder, download.suggested_filename or offered_name)
-            saved.append(destination)
-            download.save_as(destination)
             _validate_file(destination)
         if not saved:
             raise DownloadError("No downloadable files for " + document.source_id)
@@ -509,12 +528,11 @@ def _collect_documents(
                 _retry(lambda: _download_row(page, document, output_dir, max_files=remaining))
                 saved_bytes = sum(Path(path).stat().st_size for path in result.saved_files)
                 if saved_bytes > MAX_SAVED_BYTES:
-                    for path in document.saved_paths:
-                        Path(path).unlink(missing_ok=True)
-                    document.saved_paths.clear()
-                    document.filenames.clear()
-                    document.status = "skipped"
-                    document.error = "Attachment size budget exceeded"
+                    raise DownloadLimitExceeded(
+                        "Requested files exceed the email attachment size limit"
+                    )
+            except DownloadLimitExceeded:
+                raise
             except Exception as error:
                 document.status = "failed"
                 document.error = str(error)

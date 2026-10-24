@@ -5,6 +5,7 @@ Run `.venv/bin/python -m unittest discover -s tests -v`. Tests mock OpenAI, brow
 - `test_core.py`: deduplication and valid empty ZIPs.
 - `test_parser_openai.py`: structured extraction, ambiguity, local validation, API failure classification, and configuration.
 - `test_scraper.py`: bounded retries, atomic download cleanup, public-only traversal, size/file limits, zero counts, and diagnostics.
+- `test_supervisor.py`: isolated browser process results and early termination for oversized or stalled downloads.
 - `test_lists.py`: real saved-list PDFs across multiple pages, category/matter/count validation, repeated document-number deduplication, complete inventories, legacy results, and report download cleanup. Public M12205 report fixtures are under `fixtures/uarb-lists/`.
 - `test_jobs.py`: additive migration, reopen persistence, competing claims, lease fencing, crash recovery, retry exhaustion, and separate failure notifications.
 - `test_worker.py`: durable intake/parsing, threaded lease renewal, clarification, missing-matter replies without attachments, independent matter outcomes, terminal failures, exact send retries, and expired-idempotency holds.

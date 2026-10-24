@@ -203,6 +203,20 @@ def format_not_found(matter_number: str, sender: str = "") -> str:
                 _greeting(sender), matter_number)
 
 
+def format_limit(matter_number: str, categories: str, reason: str, sender: str = "") -> str:
+    """Explain a bounded retrieval without exposing browser internals."""
+    if "size" in reason:
+        detail = "The requested files exceeded the email attachment size limit."
+    else:
+        detail = "A requested file or page took too long to download."
+    return ("{}\n\nMatter number: {}\nDocument type: {}\n\n{} "
+            "I stopped the request and did not send a ZIP. "
+            "Please request a smaller document selection or contact the agent operator."
+            "\n\nBest,\nRegulatory Agent").format(
+                _greeting(sender), matter_number, categories, detail,
+            )
+
+
 def format_failure(job: dict) -> str:
     """Explain a terminal outcome without leaking exception or credential details."""
     if job.get("send_started_at"):
