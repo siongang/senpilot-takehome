@@ -110,36 +110,53 @@ def _read_header(page: Page, matter_number: str, category: str) -> MatterResult:
 def _visible_documents(
     page: Page, start_position: int, category: str = "",
     source_ids: List[str] | None = None,
+    recording_ids_by_row: Dict[tuple[str, str], str] | None = None,
 ) -> List[Document]:
     documents = []
+    recording_ids_by_row = recording_ids_by_row if recording_ids_by_row is not None else {}
+    snapshot_keys = set()
     rows = page.locator("tr.v-grid-row[role='row']")
     for index in range(rows.count()):
         row = rows.nth(index)
         if row.get_by_role("button", name="GO GET IT").count() == 0:
             continue
         if category == "Recordings":
-            # The sound-file grid has no SF number; its first field is a date.
-            position = start_position + index
-            if source_ids is None or position > len(source_ids):
+            # The sound-file grid has no SF number; recognize rows across
+            # overlapping virtual-grid windows before assigning the next ID.
+            title = _row_text(row, ".fm_object_202 .text")
+            filed_date = _row_text(row, ".fm_object_201 .text")
+            key = (title.casefold(), filed_date)
+            if not title or key in snapshot_keys:
+                raise DownloadError("Recording rows cannot be uniquely identified")
+            snapshot_keys.add(key)
+            if key not in recording_ids_by_row:
+                position = len(recording_ids_by_row)
+                if source_ids is None or position >= len(source_ids):
+                    raise DownloadError("Recording row has no matching Save List ID")
+                recording_ids_by_row[key] = source_ids[position]
+            source_id = recording_ids_by_row[key]
+            if source_ids is None or source_id not in source_ids:
                 raise DownloadError("Recording row has no matching Save List ID")
-            source_id = source_ids[position - 1]
+            display_position = source_ids.index(source_id) + 1
         else:
             source_id = _row_text(row, ".fm_object_201 .text")
             if not source_id:
                 source_id = _row_text(row, ".fm_object_268 .text")
             if not source_id:
                 source_id = _row_text(row, ".fm_object_300 .text")
+            title = _row_text(row, ".fm_object_202 .text")
+            filed_date = _row_text(row, ".fm_object_203 .text")
+            display_position = start_position + index
         if not source_id:
             continue
         documents.append(
             Document(
                 source_id=source_id,
-                title=_row_text(row, ".fm_object_202 .text"),
-                filed_date=_row_text(row, ".fm_object_201 .text") if category == "Recordings"
-                else _row_text(row, ".fm_object_203 .text"),
+                title=title,
+                filed_date=filed_date,
                 security=_row_text(row, ".fm_object_204 .text"),
                 extension=_row_extension(row),
-                display_position=start_position + index,
+                display_position=display_position,
             )
         )
     return documents
@@ -224,7 +241,9 @@ def _download_row(page: Page, document: Document, folder: Path, *, max_files: in
     try:
         rows = page.locator("tr.v-grid-row[role='row']")
         if document.category == "Recordings":
-            rows = rows.filter(has=page.get_by_text(document.title, exact=True))
+            rows = rows.filter(has=page.get_by_text(document.title, exact=True)).filter(
+                has=page.get_by_text(document.filed_date, exact=True)
+            )
             if rows.count() != 1:
                 raise DownloadError("Could not uniquely locate recording " + document.source_id)
         else:
@@ -461,13 +480,14 @@ def _collect_documents(
     """Walk one category's rows in display order, with one result per source ID."""
     category = category or result.requested_category
     seen = set()
+    recording_ids_by_row: Dict[tuple[str, str], str] = {}
     stagnant_scrolls = 0
     saved_before = len(result.saved_files)
     while len(result.saved_files) - saved_before < limit:
         if category == "Recordings":
             source_ids = (result.document_ids_by_category or {}).get(category)
             visible = _retry(lambda: _visible_documents(
-                page, len(seen) + 1, category, source_ids,
+                page, len(seen) + 1, category, source_ids, recording_ids_by_row,
             ))
         else:
             visible = _retry(lambda: _visible_documents(page, len(seen) + 1))
@@ -505,7 +525,11 @@ def _collect_documents(
             return
         stagnant_scrolls = stagnant_scrolls + 1 if not fresh else 0
         if stagnant_scrolls >= 3 or not _scroll_documents(page):
-            return
+            raise DownloadError(
+                "{} grid showed {} of {} listed rows".format(
+                    category, len(seen), result.category_counts[category],
+                )
+            )
 
 
 def _new_session(browser):

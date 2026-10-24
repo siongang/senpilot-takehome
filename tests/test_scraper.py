@@ -226,12 +226,42 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual([item.title for item in found], ["Part 1", "Part 2"])
         self.assertEqual([item.filed_date for item in found], ["10/06/2026", "10/06/2026"])
 
+    def test_overlapping_recording_grid_keeps_existing_ids(self):
+        page = MagicMock()
+        rows = page.locator.return_value
+        rows.count.return_value = 2
+        first, second, third = MagicMock(), MagicMock(), MagicMock()
+        for row in (first, second, third):
+            row.get_by_role.return_value.count.return_value = 1
+        rows.nth.side_effect = [first, second, second, third]
+        titles = {first: "Part 1", second: "Part 2", third: "Part 3"}
+
+        def row_text(row, selector):
+            if selector == ".fm_object_202 .text":
+                return titles[row]
+            if selector == ".fm_object_201 .text":
+                return "10/06/2026"
+            if selector == ".fm_object_204 .text":
+                return "Public"
+            return ""
+
+        ids = ["SF07694", "SF07695", "SF07696"]
+        known = {}
+        with patch.object(browser, "_row_text", side_effect=row_text), patch.object(
+            browser, "_row_extension", return_value=""
+        ):
+            first_window = browser._visible_documents(page, 1, "Recordings", ids, known)
+            next_window = browser._visible_documents(page, 3, "Recordings", ids, known)
+        self.assertEqual([item.source_id for item in first_window], ids[:2])
+        self.assertEqual([item.source_id for item in next_window], ids[1:])
+
     def test_recording_export_prepares_then_downloads_file(self):
         with tempfile.TemporaryDirectory() as folder:
             page = MagicMock()
             rows = MagicMock()
             matching_rows = MagicMock()
             matching_rows.count.return_value = 1
+            matching_rows.filter.return_value = matching_rows
             rows.filter.return_value = matching_rows
             controls = MagicMock()
             controls.count.return_value = 1
@@ -255,6 +285,43 @@ class ScraperTests(unittest.TestCase):
             self.assertEqual(order, ["prepare", "download"])
             self.assertEqual(item.filenames, ["sound.mp3"])
             self.assertEqual(Path(item.saved_paths[0]).read_bytes(), b"audio")
+
+    def test_recording_export_error_cancels_modal_before_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = MagicMock()
+            rows = page.locator.return_value
+            matches = rows.filter.return_value
+            matches.filter.return_value = matches
+            matches.count.return_value = 1
+            dialog = page.get_by_role.return_value
+            dialog.locator.return_value.input_value.return_value = ""
+            dialog.is_visible.return_value = True
+            item = document("SF07694")
+            item.category = "Recordings"
+            with patch.object(browser, "_close_download_dialog"):
+                with self.assertRaisesRegex(browser.DownloadError, "no filename"):
+                    browser._download_row(page, item, Path(folder))
+            dialog.get_by_role.return_value.click.assert_called_once_with(timeout=10000)
+            dialog.wait_for.assert_any_call(state="hidden", timeout=10000)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_incomplete_grid_raises_instead_of_returning_partial_success(self):
+        result = matter(3)
+
+        def save(page, item, folder, **kwargs):
+            path = folder / "one.pdf"
+            path.write_bytes(b"%PDF-good")
+            item.saved_paths = [str(path)]
+            item.status = "downloaded"
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            browser, "_visible_documents", return_value=[document("1")]
+        ), patch.object(browser, "_download_row", side_effect=save), patch.object(
+            browser, "_scroll_documents", return_value=False
+        ):
+            with self.assertRaisesRegex(browser.DownloadError, "showed 1 of 3"):
+                browser._collect_documents(MagicMock(), result, Path(folder), 10)
+        self.assertEqual(len(result.saved_files), 1)
 
     def test_collection_passes_remaining_file_count_to_multi_file_rows(self):
         result = matter(3)
