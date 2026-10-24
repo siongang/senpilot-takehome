@@ -202,6 +202,60 @@ class ScraperTests(unittest.TestCase):
             self.assertEqual(page.expect_download.call_count, 2)
             self.assertEqual(len(item.saved_paths), 2)
 
+    def test_recordings_use_save_list_ids_instead_of_date_column(self):
+        page = MagicMock()
+        rows = page.locator.return_value
+        rows.count.return_value = 2
+        first, second = MagicMock(), MagicMock()
+        rows.nth.side_effect = [first, second]
+        first.get_by_role.return_value.count.return_value = 1
+        second.get_by_role.return_value.count.return_value = 1
+
+        def row_text(row, selector):
+            values = {
+                first: {".fm_object_201 .text": "10/06/2026", ".fm_object_202 .text": "Part 1", ".fm_object_204 .text": "Public"},
+                second: {".fm_object_201 .text": "10/06/2026", ".fm_object_202 .text": "Part 2", ".fm_object_204 .text": "Public"},
+            }
+            return values[row].get(selector, "")
+
+        with patch.object(browser, "_row_text", side_effect=row_text), patch.object(
+            browser, "_row_extension", return_value=""
+        ):
+            found = browser._visible_documents(page, 1, "Recordings", ["SF07694", "SF07695"])
+        self.assertEqual([item.source_id for item in found], ["SF07694", "SF07695"])
+        self.assertEqual([item.title for item in found], ["Part 1", "Part 2"])
+        self.assertEqual([item.filed_date for item in found], ["10/06/2026", "10/06/2026"])
+
+    def test_recording_export_prepares_then_downloads_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = MagicMock()
+            rows = MagicMock()
+            matching_rows = MagicMock()
+            matching_rows.count.return_value = 1
+            rows.filter.return_value = matching_rows
+            controls = MagicMock()
+            controls.count.return_value = 1
+            controls.nth.return_value.inner_text.return_value = "sound.mp3"
+            page.locator.side_effect = lambda selector: (
+                rows if selector == "tr.v-grid-row[role='row']" else controls
+            )
+            dialog = page.get_by_role.return_value
+            dialog.locator.return_value.input_value.return_value = "sound.mp3"
+            download = page.expect_download.return_value.__enter__.return_value.value
+            download.failure.return_value = None
+            download.suggested_filename = "sound.mp3"
+            download.save_as.side_effect = lambda path: path.write_bytes(b"audio")
+            order = []
+            dialog.get_by_role.return_value.click.side_effect = lambda **kwargs: order.append("prepare")
+            controls.nth.return_value.click.side_effect = lambda **kwargs: order.append("download")
+            item = document("SF07694")
+            item.category = "Recordings"
+            with patch.object(browser, "_close_download_dialog"):
+                browser._download_row(page, item, Path(folder))
+            self.assertEqual(order, ["prepare", "download"])
+            self.assertEqual(item.filenames, ["sound.mp3"])
+            self.assertEqual(Path(item.saved_paths[0]).read_bytes(), b"audio")
+
     def test_collection_passes_remaining_file_count_to_multi_file_rows(self):
         result = matter(3)
         allowances = []

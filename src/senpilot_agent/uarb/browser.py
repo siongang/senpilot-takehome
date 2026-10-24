@@ -107,25 +107,36 @@ def _read_header(page: Page, matter_number: str, category: str) -> MatterResult:
     )
 
 
-def _visible_documents(page: Page, start_position: int) -> List[Document]:
+def _visible_documents(
+    page: Page, start_position: int, category: str = "",
+    source_ids: List[str] | None = None,
+) -> List[Document]:
     documents = []
     rows = page.locator("tr.v-grid-row[role='row']")
     for index in range(rows.count()):
         row = rows.nth(index)
         if row.get_by_role("button", name="GO GET IT").count() == 0:
             continue
-        source_id = _row_text(row, ".fm_object_201 .text")
-        if not source_id:
-            source_id = _row_text(row, ".fm_object_268 .text")
-        if not source_id:
-            source_id = _row_text(row, ".fm_object_300 .text")
+        if category == "Recordings":
+            # The sound-file grid has no SF number; its first field is a date.
+            position = start_position + index
+            if source_ids is None or position > len(source_ids):
+                raise DownloadError("Recording row has no matching Save List ID")
+            source_id = source_ids[position - 1]
+        else:
+            source_id = _row_text(row, ".fm_object_201 .text")
+            if not source_id:
+                source_id = _row_text(row, ".fm_object_268 .text")
+            if not source_id:
+                source_id = _row_text(row, ".fm_object_300 .text")
         if not source_id:
             continue
         documents.append(
             Document(
                 source_id=source_id,
                 title=_row_text(row, ".fm_object_202 .text"),
-                filed_date=_row_text(row, ".fm_object_203 .text"),
+                filed_date=_row_text(row, ".fm_object_201 .text") if category == "Recordings"
+                else _row_text(row, ".fm_object_203 .text"),
                 security=_row_text(row, ".fm_object_204 .text"),
                 extension=_row_extension(row),
                 display_position=start_position + index,
@@ -191,6 +202,13 @@ def _close_download_dialog(page: Page) -> None:
         raise DownloadError("Download dialog remained open without a Close control")
 
 
+def _close_export_dialog(page: Page) -> None:
+    dialog = page.get_by_role("dialog", name="Export Field to File")
+    if dialog.is_visible():
+        dialog.get_by_role("button", name="Cancel", exact=True).click(timeout=10000)
+        dialog.wait_for(state="hidden", timeout=10000)
+
+
 def _validate_file(destination: Path) -> None:
     if destination.stat().st_size == 0:
         raise DownloadError("Downloaded file is empty: " + destination.name)
@@ -204,10 +222,23 @@ def _download_row(page: Page, document: Document, folder: Path, *, max_files: in
     """Save a row atomically: failures remove every file from this attempt."""
     saved: List[Path] = []
     try:
-        row = page.locator("tr.v-grid-row[role='row']").filter(
-            has=page.get_by_text(document.source_id, exact=True)
-        ).first
+        rows = page.locator("tr.v-grid-row[role='row']")
+        if document.category == "Recordings":
+            rows = rows.filter(has=page.get_by_text(document.title, exact=True))
+            if rows.count() != 1:
+                raise DownloadError("Could not uniquely locate recording " + document.source_id)
+        else:
+            rows = rows.filter(has=page.get_by_text(document.source_id, exact=True))
+        row = rows.first
         row.get_by_role("button", name="GO GET IT").click(timeout=10000)
+        if document.category == "Recordings":
+            dialog = page.get_by_role("dialog", name="Export Field to File")
+            dialog.wait_for(state="visible", timeout=20000)
+            if not dialog.locator('input[type="text"]').input_value().strip():
+                raise DownloadError("Recording export has no filename for " + document.source_id)
+            # OK prepares the file; WebDirect then opens its usual Download Files dialog.
+            dialog.get_by_role("button", name="OK", exact=True).click(timeout=10000)
+            dialog.wait_for(state="hidden", timeout=10000)
         controls = page.locator('[role="button"].fm-download-button:visible')
         controls.first.wait_for(state="visible", timeout=20000)
         for index in range(controls.count()):
@@ -234,6 +265,8 @@ def _download_row(page: Page, document: Document, folder: Path, *, max_files: in
         for path in saved:
             path.unlink(missing_ok=True)
         try:
+            if document.category == "Recordings":
+                _close_export_dialog(page)
             _close_download_dialog(page)
         except Exception:
             pass
@@ -431,7 +464,13 @@ def _collect_documents(
     stagnant_scrolls = 0
     saved_before = len(result.saved_files)
     while len(result.saved_files) - saved_before < limit:
-        visible = _retry(lambda: _visible_documents(page, len(seen) + 1))
+        if category == "Recordings":
+            source_ids = (result.document_ids_by_category or {}).get(category)
+            visible = _retry(lambda: _visible_documents(
+                page, len(seen) + 1, category, source_ids,
+            ))
+        else:
+            visible = _retry(lambda: _visible_documents(page, len(seen) + 1))
         fresh = []
         for document in visible:
             if document.source_id not in seen:
