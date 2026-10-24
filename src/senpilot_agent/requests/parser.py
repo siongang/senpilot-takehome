@@ -1,4 +1,4 @@
-"""OpenAI extraction with local validation for multiple matters and one document type."""
+"""OpenAI extraction with local validation for multiple matters and document types."""
 
 from __future__ import annotations
 
@@ -56,6 +56,9 @@ class _Extraction(BaseModel):
     matter_numbers: list[str]
     document_types: list[DocumentType]
     ambiguous: bool
+    ambiguity_reason: Literal[
+        "none", "matter_selection", "document_selection", "matter_document_mapping", "other"
+    ]
 
 
 _INSTRUCTIONS = """Extract the user's document retrieval request from the supplied email JSON.
@@ -71,33 +74,68 @@ Do not infer a document type from a generic request for documents or files.
 If a field is missing, return an empty list for it. If multiple values are requested,
 return all of them. Set ambiguous=true when the user's intended selection is unclear,
 including 'all documents', alternatives without a selection, or unclear corrections.
-A clear request selects one or more matter numbers and exactly one shared category.
-Multiple matters are supported: apply the single requested category to every matter.
-If different categories are assigned to different matters, return all categories; do not
-collapse them into a shared category.
+A clear request may name one or more matter numbers and any number of those categories,
+including none. The same document types apply to every listed matter.
+If different categories are assigned to different matters, set ambiguous=true.
 Use ambiguous=true for alternatives: 'M12205 or M12345' is not a request for both.
+When ambiguous=true, choose the most specific ambiguity_reason:
+- matter_selection: the sender has not chosen between matter numbers.
+- document_selection: the sender has not chosen document types, including 'all documents'.
+- matter_document_mapping: it is unclear which types apply to which matters, or
+  different types are requested for different matters.
+- other: another unclear selection or correction.
+Use ambiguity_reason='none' when ambiguous=false.
 Examples:
-- 'Key Documents for M12205 and M12345' => both matters, Key Documents, ambiguous=false.
-- 'Key Documents for M12205 or M12345?' => both matters, Key Documents, ambiguous=true.
-- 'M12205 exhibits; M12345 transcripts' => both matters, both categories (requires clarification).
+- 'Key Documents for M12205 and M12345' => both matters, Key Documents, ambiguous=false, ambiguity_reason=none.
+- 'Exhibits and Transcripts for M12205' => M12205, both categories, ambiguous=false, ambiguity_reason=none.
+- 'M12205' => M12205, no categories, ambiguous=false, ambiguity_reason=none.
+- 'Key Documents for M12205 or M12345?' => both matters, Key Documents, ambiguous=true, ambiguity_reason=matter_selection.
+- 'M12205 exhibits; M12345 transcripts' => both matters, both categories, ambiguous=true, ambiguity_reason=matter_document_mapping.
 Do not guess.
 """
 
 
-def _clarification(matters: list[str], categories: list[str], ambiguous: bool) -> ParsedRequest:
+def _stored_categories(categories: list[str]) -> str:
+    selected = set(categories)
+    return ", ".join(name for name in CATEGORIES if name in selected)
+
+
+def _clarification(
+    matters: list[str], categories: list[str], ambiguous: bool, reason: str = "other"
+) -> ParsedRequest:
+    stored = _stored_categories(categories)
     matter = matters[0] if matters else None
-    category = categories[0] if len(categories) == 1 else None
-    if ambiguous or (not matters and category is None):
+    category = stored or None
+    if ambiguous:
+        if reason == "matter_selection" and matters:
+            question = "Which matter number would you like me to use: {}?".format(", ".join(matters))
+        elif reason == "document_selection" and matters:
+            question = (
+                "Which document types would you like for {}? Choose one or more of: {}."
+            ).format(", ".join(matters), ", ".join(CATEGORIES))
+        elif reason == "matter_document_mapping" and matters:
+            question = (
+                "I can apply one set of document types to every matter in an email. "
+                "For {}, please reply with the types to apply to all of them, or send "
+                "separate emails for different selections. Available types: {}."
+            ).format(", ".join(matters), ", ".join(CATEGORIES))
+        else:
+            question = (
+                "Please specify the matter numbers you want. Any document types you name apply to every matter: "
+                + ", ".join(CATEGORIES) + "."
+            )
         return ParsedRequest(
-            matter, category,
-            "Please specify one or more matter numbers (M plus five digits) and one shared document type: "
-            + ", ".join(CATEGORIES) + ".",
+            matter, category, question,
         )
-    if matter is None:
-        return ParsedRequest(None, category, "Please specify at least one matter number in the form M12345.")
-    if category is None:
-        return ParsedRequest(matter, None, "Please specify exactly one document type to apply to all listed matters: " + ", ".join(CATEGORIES) + ".")
-    return ParsedRequest(matter, category, matter_numbers=tuple(matters))
+    if not matters:
+        if stored:
+            return ParsedRequest(None, category, "Please specify at least one matter number in the form M12345.")
+        return ParsedRequest(
+            None, None,
+            "Please specify one or more matter numbers (M plus five digits). "
+            "Document types are optional: " + ", ".join(CATEGORIES) + ".",
+        )
+    return ParsedRequest(matter, stored, matter_numbers=tuple(matters))
 
 
 def parse_request(subject: str, body: str) -> ParsedRequest:
@@ -108,7 +146,7 @@ def parse_request(subject: str, body: str) -> ParsedRequest:
     """
     subject, body = subject or "", body or ""
     if len(subject) + len(body) > MAX_EMAIL_CHARACTERS:
-        return ParsedRequest(None, None, "Please send a shorter request containing matter numbers and one shared document type.")
+        return ParsedRequest(None, None, "Please send a shorter request containing matter numbers and any document types.")
     try:
         settings = load_settings()
         settings.require_openai()
@@ -154,4 +192,4 @@ def parse_request(subject: str, body: str) -> ParsedRequest:
         if normalized not in matters:
             matters.append(normalized)
     categories = list(dict.fromkeys(extracted.document_types))
-    return _clarification(matters, categories, extracted.ambiguous)
+    return _clarification(matters, categories, extracted.ambiguous, extracted.ambiguity_reason)

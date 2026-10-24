@@ -16,6 +16,20 @@ CATEGORIES = (
 )
 
 
+def split_categories(value: Optional[str]) -> tuple:
+    """Return canonical document types from a stored comma-separated value.
+
+    An empty value means the request named a matter and no document type.
+    """
+    if value is None or not str(value).strip():
+        return ()
+    selected = {part.strip() for part in str(value).split(",") if part.strip()}
+    unknown = selected.difference(CATEGORIES)
+    if unknown:
+        raise ValueError("Unsupported document type: " + ", ".join(sorted(unknown)))
+    return tuple(name for name in CATEGORIES if name in selected)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -28,6 +42,7 @@ class Document:
     security: str
     extension: str
     display_position: int
+    category: str = ""
     status: str = "pending"
     filenames: List[str] = field(default_factory=list)
     saved_paths: List[str] = field(default_factory=list)

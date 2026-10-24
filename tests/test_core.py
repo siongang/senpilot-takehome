@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 from senpilot_agent.jobs.store import JobStore
-from senpilot_agent.models import MatterResult
+from senpilot_agent.models import CATEGORIES, Document, MatterResult
 from senpilot_agent.output.archive import create_zip
 from senpilot_agent.requests.parser import ParsedRequest
 
@@ -54,6 +54,29 @@ class CoreTests(unittest.TestCase):
             path = create_zip(result, Path(directory) / "empty.zip")
             with zipfile.ZipFile(path) as archive:
                 self.assertEqual(archive.namelist(), [])
+                self.assertIsNone(archive.testzip())
+
+    def test_zip_puts_each_document_type_in_its_own_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            exhibit = folder / "exhibit.pdf"
+            recording = folder / "hearing.mp3"
+            exhibit.write_bytes(b"%PDF-exhibit")
+            recording.write_bytes(b"ID3recording")
+            result = MatterResult(
+                "M12205", "Exhibits, Recordings", "Example", "Closed", "Water", "Capital",
+                "Today", "Decision Date", "Today", "Done",
+                {name: int(name in ("Exhibits", "Recordings")) for name in CATEGORIES},
+                [
+                    Document("1", "Exhibit", "Today", "Public", "pdf", 1, category="Exhibits",
+                             status="downloaded", filenames=[exhibit.name], saved_paths=[str(exhibit)]),
+                    Document("2", "Hearing", "Today", "Public", "mp3", 2, category="Recordings",
+                             status="downloaded", filenames=[recording.name], saved_paths=[str(recording)]),
+                ],
+            )
+            path = create_zip(result, folder / "matter.zip")
+            with zipfile.ZipFile(path) as archive:
+                self.assertEqual(archive.namelist(), ["Exhibits/exhibit.pdf", "Recordings/hearing.mp3"])
                 self.assertIsNone(archive.testzip())
 
 

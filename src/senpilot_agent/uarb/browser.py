@@ -10,7 +10,7 @@ from playwright.sync_api import (
     Error as PlaywrightError, Page, TimeoutError as PlaywrightTimeout, sync_playwright,
 )
 
-from senpilot_agent.models import CATEGORIES, Document, MatterResult
+from senpilot_agent.models import CATEGORIES, Document, MatterResult, split_categories
 from senpilot_agent.uarb.lists import read_list_pdf
 
 
@@ -418,11 +418,15 @@ def _scroll_documents(page: Page) -> bool:
     return True
 
 
-def _collect_documents(page: Page, result: MatterResult, output_dir: Path, limit: int) -> None:
-    """Walk virtualized rows in display order, with one result per source ID."""
+def _collect_documents(
+    page: Page, result: MatterResult, output_dir: Path, limit: int, category: str | None = None,
+) -> None:
+    """Walk one category's rows in display order, with one result per source ID."""
+    category = category or result.requested_category
     seen = set()
     stagnant_scrolls = 0
-    while len(result.saved_files) < limit:
+    saved_before = len(result.saved_files)
+    while len(result.saved_files) - saved_before < limit:
         visible = _retry(lambda: _visible_documents(page, len(seen) + 1))
         fresh = []
         for document in visible:
@@ -430,6 +434,7 @@ def _collect_documents(page: Page, result: MatterResult, output_dir: Path, limit
                 seen.add(document.source_id)
                 fresh.append(document)
         for document in fresh:
+            document.category = category
             document.display_position = len(result.documents) + 1
             result.documents.append(document)
             if document.security.lower() != "public":
@@ -437,7 +442,7 @@ def _collect_documents(page: Page, result: MatterResult, output_dir: Path, limit
                 document.error = "Security label: " + document.security
                 continue
             try:
-                remaining = limit - len(result.saved_files)
+                remaining = limit - (len(result.saved_files) - saved_before)
                 _retry(lambda: _download_row(page, document, output_dir, max_files=remaining))
                 saved_bytes = sum(Path(path).stat().st_size for path in result.saved_files)
                 if saved_bytes > MAX_SAVED_BYTES:
@@ -451,9 +456,9 @@ def _collect_documents(page: Page, result: MatterResult, output_dir: Path, limit
                 document.status = "failed"
                 document.error = str(error)
                 _capture_failure(page, output_dir, "download-" + document.source_id, error)
-            if len(result.saved_files) >= limit:
+            if len(result.saved_files) - saved_before >= limit:
                 return
-        if len(seen) >= result.category_counts[result.requested_category]:
+        if len(seen) >= result.category_counts[category]:
             return
         stagnant_scrolls = stagnant_scrolls + 1 if not fresh else 0
         if stagnant_scrolls >= 3 or not _scroll_documents(page):
@@ -481,12 +486,15 @@ def scrape_matter(
     max_documents: int = 10,
     headless: bool = True,
 ) -> MatterResult:
-    """Search one matter, save up to ten Public files, and return facts."""
+    """Search one matter, save requested Public files by category, and return facts.
+
+    An empty category string reads the matter and its counts without downloading.
+    Each requested type is saved in its own folder, up to max_documents files.
+    """
     matter_number = matter_number.upper()
     if not re.fullmatch(r"M\d{5}", matter_number):
         raise ValueError("Matter number must look like M12345")
-    if requested_category not in CATEGORIES:
-        raise ValueError("Unsupported document type: " + requested_category)
+    requested = split_categories(requested_category)
     if not 1 <= max_documents <= 10:
         raise ValueError("max_documents must be between 1 and 10")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -497,12 +505,15 @@ def scrape_matter(
             context, page = _new_session(browser)
             try:
                 _retry(lambda: _find_matter(page, matter_number))
-                result = _retry(lambda: _read_header(page, matter_number, requested_category))
+                result = _retry(lambda: _read_header(page, matter_number, ", ".join(requested)))
                 _inventory_matter(page, result, output_dir / "lists")
-                if result.category_counts[requested_category] == 0:
-                    return result
-                _retry(lambda: _open_category(page, requested_category))
-                _collect_documents(page, result, output_dir, max_documents)
+                for category in requested:
+                    if result.category_counts[category] == 0:
+                        continue
+                    _retry(lambda category=category: _open_category(page, category))
+                    _collect_documents(
+                        page, result, output_dir / category, max_documents, category,
+                    )
                 return result
             except MatterNotFound:
                 raise

@@ -16,7 +16,7 @@ from senpilot_agent.config import Settings
 from senpilot_agent.email.agentmail import AgentMailClient
 from senpilot_agent.email.message import message_text
 from senpilot_agent.jobs.store import JobStore
-from senpilot_agent.models import MatterResult, utc_now
+from senpilot_agent.models import MatterResult, split_categories, utc_now
 from senpilot_agent.output.archive import create_zip
 from senpilot_agent.output.response import (
     format_clarification, format_empty, format_failure, format_not_found, format_result,
@@ -188,14 +188,19 @@ class Worker:
                         raise RuntimeError("No selected public documents could be downloaded")
                     self._update(job, result_json=json.dumps(result.to_dict()), status="packaging")
 
+                sender = job.get("sender") or ""
+                categories = split_categories(result.requested_category)
+                if not categories:
+                    self._send(job, format_result(result, 0, sender, attachment_line=""), None, lost)
+                    return job_id
                 zip_path = Path(job["zip_path"]) if job["zip_path"] else None
                 if zip_path is None or not zip_path.is_file():
                     if job.get("send_started_at"):
                         raise DeliveryNeedsReview("Saved email attachment missing; delivery outcome needs operator review")
+                    slug = "-".join(name.lower().replace(" ", "-") for name in categories)
                     zip_path = create_zip(result, folder / ("archive-attempt-{}".format(job["attempts"])) / "{}-{}.zip".format(
-                        result.matter_number, result.requested_category.lower().replace(" ", "-")))
+                        result.matter_number, slug))
                     self._update(job, zip_path=str(zip_path))
-                sender = job.get("sender") or ""
                 body = (format_result(result, len(result.saved_files), sender)
                         if result.saved_files else format_empty(result, sender))
                 self._send(job, body, zip_path, lost)

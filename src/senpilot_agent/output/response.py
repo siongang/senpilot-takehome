@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from email.utils import parseaddr
 
-from senpilot_agent.models import CATEGORIES, MatterResult
+from senpilot_agent.models import CATEGORIES, MatterResult, split_categories
 
 
 def _sender_name(sender: str) -> str:
@@ -56,38 +56,50 @@ def _title_parts(title: str) -> tuple[str, str]:
     lines = [line.strip() for line in title.splitlines() if line.strip()]
     if not lines:
         return "", ""
-    return lines[0], "\n".join(lines[1:])
+    return lines[0], " ".join(lines[1:])
 
 
-def _listing_summary(result: MatterResult) -> str:
-    """State the tab total in documents once the saved lists have been deduplicated."""
-    listings = result.listing_total
-    documents = result.document_total
-    if documents is None:
-        return (
-            "These five tabs show {}. The same document can appear on more than one tab, "
-            "so this is not a count of unique files."
-        ).format(_plural(listings, "listing"))
-    if listings == documents:
-        return "These five tabs show {}.".format(_plural(documents, "document"))
-    return "These five tabs show {} of {}.".format(
-        _plural(listings, "listing"), _plural(documents, "document"),
-    )
+def _requested_names(result: MatterResult) -> list[str]:
+    try:
+        return list(split_categories(result.requested_category))
+    except ValueError:
+        return []
 
 
 def _document_total(result: MatterResult) -> str:
     total = result.document_total
     if total is None:
-        return "Total documents in this matter: unavailable (saved-list inventory was not recorded)."
-    return (
-        "Total documents in this matter: {}. Counted from the saved lists, with repeated "
-        "document numbers counted once, including confidential records. "
-        "A listed document may contain multiple files."
-    ).format(total)
+        return "Documents: unavailable."
+    return "Documents: {}.".format(total)
+
+
+def _category_files(result: MatterResult, category: str) -> int:
+    return sum(
+        len(document.saved_paths)
+        for document in result.successful_documents
+        if document.category == category
+    )
 
 
 def _attachment_line(result: MatterResult, attached_count: int) -> str:
-    category = result.requested_category
+    categories = _requested_names(result)
+    if len(categories) > 1:
+        parts = []
+        for category in categories:
+            files = _category_files(result, category)
+            if not files:
+                continue
+            listed = result.category_counts[category]
+            if files == listed:
+                parts.append("{} from {}".format(_plural(files, "file"), category))
+            else:
+                parts.append("{} from {} ({} on that tab)".format(
+                    _plural(files, "file"), category, _plural(listed, "listing"),
+                ))
+        if not parts:
+            return "The ZIP is empty."
+        return "The ZIP contains {}.".format(", ".join(parts))
+    category = categories[0] if categories else result.requested_category
     downloaded = len(result.successful_documents)
     listed = result.category_counts[category]
     files = _plural(attached_count, "file")
@@ -112,17 +124,15 @@ def format_result(
     attachment_line: str | None = None,
 ) -> str:
     headline, description = _title_parts(result.title)
+    requested = set(_requested_names(result))
     detail = [
         _greeting(sender),
         "",
-        "Here are the results for {}.".format(result.matter_number),
-        "",
-        result.matter_number,
+        "Matter number: {}".format(result.matter_number),
+        "Title: {}".format(headline),
     ]
-    if headline:
-        detail.append(headline)
     if description:
-        detail.extend(["", description])
+        detail.append("Description: {}".format(description))
     detail.extend([
         "",
         "Status: {}".format(result.status),
@@ -134,17 +144,18 @@ def format_result(
         "",
         _document_total(result),
         "",
-        "Listings",
     ])
     for name in CATEGORIES:
-        requested = " (requested)" if name == result.requested_category else ""
-        detail.append("{}: {}{}".format(name, result.category_counts[name], requested))
-    detail.extend([
-        "",
-        _listing_summary(result),
-        "",
-        attachment_line if attachment_line is not None else _attachment_line(result, attached_count),
-    ])
+        marker = " (requested)" if name in requested else ""
+        detail.append("{}: {}{}".format(name, result.category_counts[name], marker))
+    if not requested:
+        detail.extend(["", (
+            "I have not retrieved any files. Would you like me to retrieve any document types for {}? "
+            "Reply with the matter number and one or more of: {}."
+        ).format(result.matter_number, ", ".join(CATEGORIES))])
+    line = attachment_line if attachment_line is not None else _attachment_line(result, attached_count)
+    if line:
+        detail.extend(["", line])
     failed = [item for item in result.documents if item.status == "failed"]
     if failed:
         detail.append(
@@ -166,13 +177,22 @@ def format_result(
 
 
 def format_empty(result: MatterResult, sender: str = "") -> str:
-    count = result.category_counts[result.requested_category]
-    if count == 0:
-        line = "This matter lists no {}. The ZIP is empty.".format(result.requested_category)
-    else:
+    names = _requested_names(result)
+    if not names:
+        return format_result(result, 0, sender, attachment_line="")
+    if all(result.category_counts.get(name, 0) == 0 for name in names):
+        if len(names) == 1:
+            listed = names[0]
+        else:
+            listed = ", ".join(names[:-1]) + " or " + names[-1]
+        line = "This matter lists no {}. The ZIP is empty.".format(listed)
+    elif len(names) == 1:
+        count = result.category_counts[names[0]]
         line = "No files could be attached from the selected {} {}. The ZIP is empty.".format(
-            result.requested_category, "listing" if count == 1 else "listings",
+            names[0], "listing" if count == 1 else "listings",
         )
+    else:
+        line = "No files could be attached from the selected document types. The ZIP is empty."
     return format_result(result, 0, sender, attachment_line=line)
 
 

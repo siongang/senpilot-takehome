@@ -11,7 +11,7 @@ Build an email-driven service that accepts a matter number and document type, re
 - Supported categories: Exhibits, Key Documents, Other Documents, Transcripts, Recordings.
 - Matter numbers have the form `M` followed by five digits, such as `M12205`.
 - The reply must report category counts across the matter, even though downloads come from one requested category.
-- The agent handles one or more matters and one shared category per incoming email. It sends one separate result email per distinct matter. The example request in the assignment is the primary path.
+- The agent handles one or more matters and any number of the supported categories per incoming email. The same categories apply to every matter. It sends one separate result email per distinct matter. A request with no document type receives the summary, no ZIP, and a question asking which document types to retrieve.
 - The application must remain available for evaluator requests after submission.
 - Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations. OpenAI request parsing is now implemented.
 
@@ -42,7 +42,7 @@ The email provider handles receiving and sending messages. A separately running 
 | Component | Responsibility |
 | --- | --- |
 | Incoming email adapter | Receive provider events or poll for messages; persist a job before acknowledging the event; deduplicate messages. |
-| Request parser | Use OpenAI structured extraction inside a persisted job; locally validate all matter numbers and one shared supported category. |
+| Request parser | Use OpenAI structured extraction inside a persisted job; locally validate all matter numbers and any number of supported categories, including none. |
 | Job store and queue | Persist status, attempts, request details, intermediate results, and delivery information. |
 | Browser adapter | Find and verify the matter; extract metadata and all category counts; download up to 10 requested files. |
 | Packaging | Use isolated job directories, safe filenames, and ZIP creation; verify the archive contains the expected successful downloads. |

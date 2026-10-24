@@ -194,7 +194,7 @@ class JobStore:
                 return None
             status = (
                 "clarification_pending" if row["parse_error"]
-                else "parsing" if not row["matter_number"] or not row["requested_category"]
+                else "parsing" if not row["matter_number"] or row["requested_category"] is None
                 else "sending" if row["zip_path"] or row["result_json"]
                 else "scraping"
             )

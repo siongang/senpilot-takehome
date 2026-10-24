@@ -36,22 +36,16 @@ class ResponseTests(unittest.TestCase):
         result.document_ids_by_category = {name: [] for name in CATEGORIES}
         result.document_ids_by_category.update({"Key Documents": ["97289"], "Other Documents": ["97289"]})
         body = format_result(result, 1)
-        self.assertIn("Total documents in this matter: 1.", body)
-        self.assertIn("including confidential records", body)
-        self.assertIn("may contain multiple files", body)
-        self.assertIn("These five tabs show 2 listings of 1 document.", body)
-        self.assertNotIn("not a count of unique files", body)
+        self.assertIn("Documents: 1.", body)
+        self.assertIn("Matter number: M12345", body)
+        self.assertIn("Title: Example", body)
+        self.assertNotIn("Counted from", body)
+        self.assertNotIn("five tabs", body)
         self.assertIn("The ZIP contains 1 file", body)
-        distinct = _matter(
-            "Key Documents", _counts(**{"Key Documents": 1, "Other Documents": 1}), _downloaded(1),
-        )
-        distinct.document_ids_by_category = {name: [] for name in CATEGORIES}
-        distinct.document_ids_by_category.update({"Key Documents": ["97289"], "Other Documents": ["102674"]})
-        self.assertIn("These five tabs show 2 documents.", format_result(distinct, 1))
         result.document_ids_by_category = None
         unavailable = format_result(result, 1)
-        self.assertIn("Total documents in this matter: unavailable", unavailable)
-        self.assertIn("not a count of unique files", unavailable)
+        self.assertIn("Documents: unavailable.", unavailable)
+        self.assertNotIn("five tabs", unavailable)
 
     def test_one_file_uses_singular_wording(self):
         title = (
@@ -60,22 +54,35 @@ class ResponseTests(unittest.TestCase):
         )
         result = _matter("Key Documents", _counts(**{"Key Documents": 1, "Other Documents": 1}), _downloaded(1), title)
         body = format_result(result, 1)
-        self.assertIn("Here are the results for M12345.", body)
-        self.assertIn("M12345\nGAS: Gas Pricing effective June 27, 2025\n\nPrices Prescribed", body)
+        self.assertIn("Matter number: M12345\nTitle: GAS: Gas Pricing effective June 27, 2025\nDescription: Prices Prescribed", body)
         self.assertIn("Date received: June 26, 2025", body)
         self.assertIn("Decision Date: June 26, 2025", body)
         self.assertIn("Key Documents: 1 (requested)", body)
         self.assertIn("Other Documents: 1", body)
-        self.assertIn("These five tabs show 2 listings.", body)
+        self.assertNotIn("five tabs", body)
         self.assertIn("The ZIP contains 1 file from Key Documents.", body)
         self.assertNotIn("1 files", body)
         self.assertNotIn("1 listings", body)
+
+    def test_multiple_requested_types_are_named_separately(self):
+        documents = _downloaded(2)
+        documents[0].category = "Exhibits"
+        documents[1].category = "Recordings"
+        result = _matter("Recordings, Exhibits", _counts(Exhibits=1, Recordings=1), documents)
+        body = format_result(result, 2)
+        self.assertIn("Exhibits: 1 (requested)", body)
+        self.assertIn("Recordings: 1 (requested)", body)
+        self.assertIn("The ZIP contains 1 file from Exhibits, 1 file from Recordings.", body)
+        summary = format_empty(_matter("", _counts(Exhibits=1), []))
+        self.assertNotIn("ZIP", summary)
+        self.assertIn("Would you like me to retrieve any document types for M12345?", summary)
+        self.assertIn("Exhibits, Key Documents, Other Documents, Transcripts, Recordings", summary)
 
     def test_several_files_use_plural_wording(self):
         result = _matter("Key Documents", _counts(**{"Key Documents": 2, "Other Documents": 1}), _downloaded(2))
         body = format_result(result, 2)
         self.assertIn("The ZIP contains 2 files from Key Documents.", body)
-        self.assertIn("These five tabs show 3 listings.", body)
+        self.assertNotIn("five tabs", body)
 
     def test_partial_tab_states_both_counts(self):
         result = _matter(
@@ -103,7 +110,7 @@ class ResponseTests(unittest.TestCase):
             "The ZIP contains 2 files from 1 listing in Key Documents (6 listings on that tab).",
             format_result(wider, 2),
         )
-        self.assertIn("These five tabs show 1 listing.", format_result(result, 2))
+        self.assertNotIn("five tabs", format_result(result, 2))
 
     def test_empty_replies_match_the_listing_count(self):
         none = _matter("Exhibits", _counts(), [])

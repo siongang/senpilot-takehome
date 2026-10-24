@@ -26,10 +26,13 @@ class ParserTests(unittest.TestCase):
         self.addCleanup(self.settings_patch.stop)
         self.addCleanup(self.client_patch.stop)
 
-    def response(self, matters, categories, ambiguous=False):
+    def response(self, matters, categories, ambiguous=False, ambiguity_reason='none'):
         self.parse.return_value = SimpleNamespace(
             status='completed',
-            output_parsed=_Extraction(matter_numbers=matters, document_types=categories, ambiguous=ambiguous),
+            output_parsed=_Extraction(
+                matter_numbers=matters, document_types=categories, ambiguous=ambiguous,
+                ambiguity_reason=ambiguity_reason,
+            ),
         )
 
     def test_normalizes_matter_and_uses_structured_extraction(self):
@@ -51,12 +54,19 @@ class ParserTests(unittest.TestCase):
                 self.response(['M12205'], [category])
                 self.assertEqual(parse_request('M12205', category).document_type, category)
 
-    def test_conflicting_categories_require_clarification(self):
-        self.response(['M12205'], ['Exhibits', 'Transcripts'])
+    def test_multiple_document_types_are_shared(self):
+        self.response(['M12205'], ['Transcripts', 'Exhibits'])
         parsed = parse_request('M12205', 'Send Exhibits and Transcripts')
-        self.assertFalse(parsed.valid)
-        self.assertIsNone(parsed.document_type)
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.document_type, 'Exhibits, Transcripts')
         self.assertEqual(parsed.matter_number, 'M12205')
+
+    def test_matter_without_document_type_is_valid(self):
+        self.response(['M12205'], [])
+        parsed = parse_request('M12205', 'What is the status of this matter?')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.document_type, '')
+        self.assertEqual(parsed.matters, ('M12205',))
 
     def test_multiple_matters_share_one_category(self):
         self.response(['M12205', 'M12345'], ['Exhibits'])
@@ -66,7 +76,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.document_type, 'Exhibits')
 
     def test_missing_fields_and_explicit_ambiguity(self):
-        for matters, categories, ambiguous in [([], ['Exhibits'], False), (['M12205'], [], False), ([], [], False), (['M12205'], ['Exhibits'], True)]:
+        for matters, categories, ambiguous in [([], ['Exhibits'], False), ([], [], False), (['M12205'], ['Exhibits'], True)]:
             with self.subTest(matters=matters, categories=categories, ambiguous=ambiguous):
                 self.response(matters, categories, ambiguous)
                 self.assertFalse(parse_request('M12205', 'documents please').valid)
@@ -90,9 +100,31 @@ class ParserTests(unittest.TestCase):
         self.response(['M12205', 'M99999'], ['Exhibits'])
         self.assertFalse(parse_request('M12205 and M12345', 'Exhibits').valid)
 
-    def test_multiple_categories_for_multiple_matters_require_clarification(self):
+    def test_multiple_categories_apply_to_every_listed_matter(self):
         self.response(['M12205', 'M12345'], ['Exhibits', 'Transcripts'])
-        self.assertFalse(parse_request('M12205 exhibits; M12345 transcripts', '').valid)
+        parsed = parse_request('M12205 and M12345', 'Exhibits and Transcripts')
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.matters, ('M12205', 'M12345'))
+        self.assertEqual(parsed.document_type, 'Exhibits, Transcripts')
+
+    def test_different_types_per_matter_stay_ambiguous_when_the_model_says_so(self):
+        self.response(['M12205', 'M12345'], ['Exhibits', 'Transcripts'],
+                      ambiguous=True, ambiguity_reason='matter_document_mapping')
+        parsed = parse_request('M12205 exhibits; M12345 transcripts', '')
+        self.assertFalse(parsed.valid)
+        self.assertIn('send separate emails for different selections', parsed.error)
+
+    def test_ambiguous_matter_gets_specific_question(self):
+        self.response(['M12205', 'M12345'], ['Key Documents'],
+                      ambiguous=True, ambiguity_reason='matter_selection')
+        parsed = parse_request('Key Documents for M12205 or M12345?', '')
+        self.assertEqual(parsed.error, 'Which matter number would you like me to use: M12205, M12345?')
+
+    def test_ambiguous_document_type_gets_specific_question(self):
+        self.response(['M12205'], [], ambiguous=True, ambiguity_reason='document_selection')
+        parsed = parse_request('Send all documents for M12205', '')
+        self.assertIn('Which document types would you like for M12205?', parsed.error)
+        self.assertIn('Exhibits, Key Documents', parsed.error)
 
     def test_timeout_is_operational_failure(self):
         self.parse.side_effect = APIConnectionError(request=httpx.Request('POST', 'https://api.openai.com/v1/responses'))
@@ -126,6 +158,7 @@ class ParserTests(unittest.TestCase):
     def test_invalid_structured_output_is_operational_failure(self):
         self.parse.return_value = SimpleNamespace(status='completed', output_parsed={
             'matter_numbers': ['M12205'], 'document_types': ['Unknown'], 'ambiguous': False,
+            'ambiguity_reason': 'none',
         })
         with self.assertRaises(RequestParsingError):
             parse_request('M12205', 'Exhibits')

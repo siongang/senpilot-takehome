@@ -79,7 +79,9 @@ class WorkerTests(unittest.TestCase):
         job = self.saved(self.worker.process_next())
         self.assertEqual(job["status"], "completed")
         self.assertIn('"document_ids_by_category"', job["result_json"])
-        self.assertIn("Total documents in this matter: 2.", job["reply_text"])
+        self.assertIn("Documents: 2.", job["reply_text"])
+        self.assertIn("Matter number: M12205", job["reply_text"])
+        self.assertNotIn("five tabs", job["reply_text"])
 
     def multiple(self):
         self.message['subject'] = 'M12205 and M12345 exhibits'
@@ -312,6 +314,19 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("lists no Exhibits", format_empty(result))
         result.documents = [Document("2", "Failed", "Today", "Public", "pdf", 2, status="failed")]
         self.assertIn("could not be downloaded", format_result(result, 0))
+
+    def test_matter_without_document_type_has_no_zip(self):
+        self.parser.return_value = ParsedRequest("M12205", "")
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["requested_category"], "")
+        self.assertIsNone(job["zip_path"])
+        self.assertIn("Matter number: M12205", job["reply_text"])
+        self.assertIn("Title: Example", job["reply_text"])
+        self.assertIn("Would you like me to retrieve any document types for M12205?", job["reply_text"])
+        self.assertNotIn("ZIP", job["reply_text"])
+        self.assertIsNone(self.worker.mail.reply.call_args.kwargs["zip_path"])
 
     def test_replies_greet_the_sender_by_name(self):
         named = "Sion Gang <person@example.com>"

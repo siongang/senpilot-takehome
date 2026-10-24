@@ -1,6 +1,6 @@
 # Senpilot regulatory document agent
 
-Email the agent one or more UARB matter numbers (`M` plus five digits) and one document type: Exhibits, Key Documents, Other Documents, Transcripts, or Recordings. The worker creates a separate job for each matter and sends a separate reply with its own ZIP of up to ten files, matter header, and all five category counts. For example: `Send Key Documents for M12205 and M12345`. One document type applies to all listed matters; requests with multiple document types receive clarification. The [build plan](./BUILD_PLAN.md), [architecture](./ARCHITECTURE.md), and [live-site notes](./UARB_SITE_NOTES.md) explain the scope and observed website behavior.
+Email the agent one or more UARB matter numbers (`M` plus five digits) and any of these document types: Exhibits, Key Documents, Other Documents, Transcripts, or Recordings. The worker creates a separate job for each matter and sends a separate reply. Requested types are downloaded into separate folders in one ZIP, up to ten files each. A matter with no document type gets the same summary, no ZIP, and a question asking which document types to retrieve. For example: `Send Key Documents and Exhibits for M12205 and M12345`. The same document types apply to every listed matter. The [build plan](./BUILD_PLAN.md), [architecture](./ARCHITECTURE.md), and [live-site notes](./UARB_SITE_NOTES.md) explain the scope and observed website behavior.
 
 ## Run locally
 
@@ -45,7 +45,7 @@ GitHub Actions runs tests on pull requests and automatically deploys successful 
 
 ## Request processing and recovery
 
-Incoming email is persisted before OpenAI parsing. The model extracts all requested matter numbers and one shared canonical category, and local validation rejects malformed or fabricated matter numbers. Missing or ambiguous requests receive clarification; temporary API failures stay in the durable retry queue. OpenAI interprets the email; Playwright performs website navigation and downloads, and the response uses scraped facts.
+Incoming email is persisted before OpenAI parsing. The model extracts all requested matter numbers and every named canonical category, and local validation rejects malformed or fabricated matter numbers. Missing or ambiguous requests receive clarification; temporary API failures stay in the durable retry queue. OpenAI interprets the email; Playwright performs website navigation and downloads, and the response uses scraped facts.
 
 Expansion into one job per distinct matter is atomic. Duplicate webhook deliveries do not repeat expansion; each job has its own files, attachment budget, retry state, and email idempotency key. All replies stay in the original thread, and a failed matter does not prevent other matters from completing.
 
