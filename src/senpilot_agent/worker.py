@@ -18,7 +18,9 @@ from senpilot_agent.email.message import message_text
 from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import MatterResult, utc_now
 from senpilot_agent.output.archive import create_zip
-from senpilot_agent.output.response import format_empty, format_failure, format_not_found, format_result
+from senpilot_agent.output.response import (
+    format_clarification, format_empty, format_failure, format_not_found, format_result,
+)
 from senpilot_agent.requests.parser import RequestParsingError, parse_request
 from senpilot_agent.uarb.browser import MatterNotFound, scrape_matter
 
@@ -160,7 +162,7 @@ class Worker:
                         raise LeaseLost(job_id)
                     job = self.store.get(job_id)
                 if job["parse_error"]:
-                    self._send(job, "Hi,\n\n{}\n\nBest,\nRegulatory Agent".format(job["parse_error"]), None, lost)
+                    self._send(job, format_clarification(job["parse_error"], job.get("sender") or ""), None, lost)
                     return job_id
 
                 # Resume a saved text-only response without searching again or
@@ -180,7 +182,7 @@ class Worker:
                             max_documents=self.settings.max_documents, headless=self.settings.headless,
                         )
                     except MatterNotFound:
-                        self._send(job, format_not_found(job["matter_number"]), None, lost)
+                        self._send(job, format_not_found(job["matter_number"], job.get("sender") or ""), None, lost)
                         return job_id
                     if not result.saved_files and any(item.status == "failed" for item in result.documents):
                         raise RuntimeError("No selected public documents could be downloaded")
@@ -193,8 +195,9 @@ class Worker:
                     zip_path = create_zip(result, folder / ("archive-attempt-{}".format(job["attempts"])) / "{}-{}.zip".format(
                         result.matter_number, result.requested_category.lower().replace(" ", "-")))
                     self._update(job, zip_path=str(zip_path))
-                body = (format_result(result, len(result.saved_files))
-                        if result.saved_files else format_empty(result))
+                sender = job.get("sender") or ""
+                body = (format_result(result, len(result.saved_files), sender)
+                        if result.saved_files else format_empty(result, sender))
                 self._send(job, body, zip_path, lost)
         except LeaseLost:
             LOG.warning("Stopped stale job attempt %s", job_id)

@@ -2,15 +2,37 @@
 
 from __future__ import annotations
 
+from email.utils import parseaddr
+
 from senpilot_agent.models import CATEGORIES, MatterResult
 
 
-def format_result(result: MatterResult, attached_count: int) -> str:
+def _sender_name(sender: str) -> str:
+    """Display name from a From header. An address alone is not a name."""
+    if not isinstance(sender, str):
+        return ""
+    name = " ".join(parseaddr(sender)[0].split())
+    if (
+        not name
+        or len(name) > 80
+        or "@" in name
+        or not any(character.isalpha() for character in name)
+    ):
+        return ""
+    return name
+
+
+def _greeting(sender: str) -> str:
+    name = _sender_name(sender)
+    return "Hi {},".format(name) if name else "Hi,"
+
+
+def format_result(result: MatterResult, attached_count: int, sender: str = "") -> str:
     counts = ", ".join(
         "{} {}".format(result.category_counts[name], name) for name in CATEGORIES
     )
     detail = [
-        "Hi,",
+        _greeting(sender),
         "",
         "{}: {}".format(result.matter_number, result.title),
         "Status: {}. Type: {}. Category: {}. Outcome: {}.".format(
@@ -47,8 +69,8 @@ def format_result(result: MatterResult, attached_count: int) -> str:
     return "\n".join(detail)
 
 
-def format_empty(result: MatterResult) -> str:
-    body = format_result(result, 0)
+def format_empty(result: MatterResult, sender: str = "") -> str:
+    body = format_result(result, 0, sender)
     return body.replace(
         "I attached 0 files from {} downloaded {} listings as a ZIP ({} listings in this category).".format(
             len(result.successful_documents), result.requested_category,
@@ -60,9 +82,10 @@ def format_empty(result: MatterResult) -> str:
     )
 
 
-def format_not_found(matter_number: str) -> str:
-    return ("Hi,\n\nMatter {} was not found in the UARB records. "
-            "Please check the matter number and try again.\n\nBest,\nRegulatory Agent").format(matter_number)
+def format_not_found(matter_number: str, sender: str = "") -> str:
+    return ("{}\n\nMatter {} was not found in the UARB records. "
+            "Please check the matter number and try again.\n\nBest,\nRegulatory Agent").format(
+                _greeting(sender), matter_number)
 
 
 def format_failure(job: dict) -> str:
@@ -78,4 +101,9 @@ def format_failure(job: dict) -> str:
         selection = "Matter: {}. Document type: {}.\n\n".format(
             job["matter_number"], job.get("requested_category") or "unspecified",
         )
-    return "Hi,\n\n{}{}\n\nRequest reference: {}\n\nBest,\nRegulatory Agent".format(selection, explanation, job["id"])
+    return "{}\n\n{}{}\n\nRequest reference: {}\n\nBest,\nRegulatory Agent".format(
+        _greeting(job.get("sender") or ""), selection, explanation, job["id"])
+
+
+def format_clarification(message: str, sender: str = "") -> str:
+    return "{}\n\n{}\n\nBest,\nRegulatory Agent".format(_greeting(sender), message)

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from senpilot_agent.config import Settings
 from senpilot_agent.models import CATEGORIES, Document, MatterResult
-from senpilot_agent.output.response import format_empty, format_result
+from senpilot_agent.output.response import format_clarification, format_empty, format_failure, format_not_found, format_result
 from senpilot_agent.requests.parser import ParsedRequest, RequestParsingError
 from senpilot_agent.worker import Worker
 from senpilot_agent.uarb.browser import MatterNotFound
@@ -296,6 +296,25 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("lists no Exhibits", format_empty(result))
         result.documents = [Document("2", "Failed", "Today", "Public", "pdf", 2, status="failed")]
         self.assertIn("could not be downloaded", format_result(result, 0))
+
+    def test_replies_greet_the_sender_by_name(self):
+        named = "Sion Gang <person@example.com>"
+        result = self.result("M12205", "Exhibits", self.settings.runtime_dir / "named")
+        self.assertTrue(format_result(result, 1, named).startswith("Hi Sion Gang,"))
+        self.assertTrue(format_empty(result, named).startswith("Hi Sion Gang,"))
+        self.assertTrue(format_not_found("M99999", named).startswith("Hi Sion Gang,"))
+        self.assertTrue(format_clarification("Please specify a matter", named).startswith("Hi Sion Gang,"))
+        self.assertTrue(format_failure({
+            "id": "job", "sender": '"Sion Gang" <person@example.com>',
+            "matter_number": "M12205", "requested_category": "Exhibits",
+        }).startswith("Hi Sion Gang,"))
+        self.assertTrue(format_result(result, 1, "person@example.com").startswith("Hi,"))
+        self.assertTrue(format_not_found("M12205", "Sion\r\nGang <person@example.com>").startswith("Hi Sion Gang,"))
+
+        self.message["from"] = named
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertTrue(job["reply_text"].startswith("Hi Sion Gang,"))
 
 
 if __name__ == "__main__":

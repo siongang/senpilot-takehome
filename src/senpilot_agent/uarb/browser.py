@@ -243,6 +243,62 @@ def _download_row(page: Page, document: Document, folder: Path, *, max_files: in
     document.error = None
 
 
+def _is_visible(locator) -> bool:
+    try:
+        return locator.first.is_visible() is True
+    except Exception:
+        return False
+
+
+def _not_found_dialog(page: Page):
+    """Modal shown when Go Directly to Matter matches nothing.
+
+    The title is "No Records Found" and the body says no records matched.
+    This is separate from the "No Matching Records" dialog on an empty tab.
+    """
+    return page.get_by_role("dialog", name=re.compile(r"No Records Found", re.IGNORECASE))
+
+
+def _not_found_message(page: Page):
+    return page.get_by_text(re.compile(r"No records matched your search request", re.IGNORECASE))
+
+
+def _not_found_title(page: Page):
+    return page.get_by_text(re.compile(r"No Records Found", re.IGNORECASE))
+
+
+def _matter_missing(page: Page, *, body: bool = False) -> bool:
+    if any(_is_visible(locator) for locator in (
+        _not_found_dialog(page), _not_found_title(page), _not_found_message(page),
+    )):
+        return True
+    if not body:
+        return False
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return False
+    return "no records found" in text.lower()
+
+
+def _raise_if_matter_missing(page: Page, matter_number: str, *, body: bool = False) -> None:
+    if _matter_missing(page, body=body):
+        raise MatterNotFound("Matter {} was not found".format(matter_number))
+
+
+def _wait_for_opened_matter(page: Page, matter_number: str, timeout: int) -> None:
+    """Return when the matter tabs appear. A not-found dialog ends the wait."""
+    _raise_if_matter_missing(page, matter_number)
+    exhibits = page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$"))
+    opened = exhibits.or_(_not_found_dialog(page)).or_(_not_found_title(page)).or_(_not_found_message(page))
+    try:
+        opened.first.wait_for(state="visible", timeout=timeout)
+    except PlaywrightTimeout as error:
+        _raise_if_matter_missing(page, matter_number, body=True)
+        raise error
+    _raise_if_matter_missing(page, matter_number)
+
+
 def _find_matter(page: Page, matter_number: str) -> None:
     """Reset navigation before each attempt and submit through keyboard events."""
     page.goto(UARB_URL, wait_until="domcontentloaded", timeout=60000)
@@ -259,23 +315,24 @@ def _find_matter(page: Page, matter_number: str) -> None:
     field.press("Tab")
     # Some WebDirect sessions submit on blur; in others the Search
     # control stays visible. Give the automatic transition a chance.
+    # Watch the not-found dialog during this wait so a missing matter does
+    # not sit through the exhibits timeout or a covered Search click.
     try:
-        page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
-            state="visible", timeout=5000
-        )
-    except PlaywrightTimeout:
-        search = page.locator(".fm_object_258 button")
-        if search.count():
-            search.click(timeout=10000)
-    try:
-        page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
-            state="visible", timeout=30000
-        )
-    except PlaywrightTimeout as error:
-        body = page.locator("body").inner_text(timeout=5000)
-        if "no records found" in body.lower():
-            raise MatterNotFound("Matter {} was not found".format(matter_number)) from error
+        _wait_for_opened_matter(page, matter_number, 5000)
+        return
+    except MatterNotFound:
         raise
+    except PlaywrightTimeout:
+        pass
+    _raise_if_matter_missing(page, matter_number, body=True)
+    search = page.locator(".fm_object_258 button")
+    if search.count() and _is_visible(search):
+        try:
+            search.click(timeout=5000)
+        except PlaywrightError as error:
+            _raise_if_matter_missing(page, matter_number, body=True)
+            raise error
+    _wait_for_opened_matter(page, matter_number, 30000)
 
 
 def _open_category(page: Page, category: str) -> None:
@@ -384,6 +441,8 @@ def scrape_matter(
                 _retry(lambda: _open_category(page, requested_category))
                 _collect_documents(page, result, output_dir, max_documents)
                 return result
+            except MatterNotFound:
+                raise
             except Exception as error:
                 _capture_failure(page, output_dir, "scrape", error)
                 raise

@@ -23,6 +23,56 @@ def matter(count=3):
     )
 
 
+def search_page(*, body="Loading documents", dialog=False, dialog_after_click=False):
+    """Page double whose matter wait can time out or show No Records Found."""
+    page = MagicMock()
+    exhibits = MagicMock()
+    dialog_locator = MagicMock()
+    sentence = MagicMock()
+    race = MagicMock()
+    visible = {"dialog": dialog}
+
+    def dialog_visible():
+        return visible["dialog"]
+
+    dialog_locator.first.is_visible.side_effect = dialog_visible
+    sentence.first.is_visible.return_value = False
+    if dialog:
+        race.first.wait_for.return_value = None
+    else:
+        race.first.wait_for.side_effect = PlaywrightTimeout("slow")
+    exhibits.or_.return_value = race
+    race.or_.return_value = race
+
+    def get_by_role(role, name=None, **kwargs):
+        return dialog_locator if role == "dialog" else exhibits
+
+    page.get_by_role.side_effect = get_by_role
+    page.get_by_text.return_value = sentence
+    field = MagicMock()
+    search = MagicMock()
+    search.count.return_value = 1 if dialog_after_click else 0
+    search.first.is_visible.return_value = bool(dialog_after_click)
+
+    def click(*args, **kwargs):
+        visible["dialog"] = True
+        raise PlaywrightTimeout("dialog covers Search")
+
+    search.click.side_effect = click
+    body_locator = MagicMock()
+    body_locator.inner_text.return_value = body
+
+    def locator(selector):
+        if selector == "body":
+            return body_locator
+        if selector == ".fm_object_258 button":
+            return search
+        return field
+
+    page.locator.side_effect = locator
+    return page, search
+
+
 class ScraperTests(unittest.TestCase):
     def test_retry_recovers_browser_failures_but_is_bounded(self):
         operation = MagicMock(side_effect=[PlaywrightTimeout("slow"), "done"])
@@ -38,20 +88,32 @@ class ScraperTests(unittest.TestCase):
         operation.assert_called_once()
 
     def test_search_timeout_without_explicit_not_found_is_retryable(self):
-        page = MagicMock()
-        page.get_by_role.return_value.wait_for.side_effect = PlaywrightTimeout("slow")
-        page.locator.return_value.inner_text.return_value = "Loading documents"
+        page, search = search_page()
         with self.assertRaises(PlaywrightTimeout):
             browser._retry(lambda: browser._find_matter(page, "M12205"))
         self.assertEqual(page.goto.call_count, 2)
+        search.click.assert_not_called()
 
     def test_explicit_not_found_is_not_retried(self):
-        page = MagicMock()
-        page.get_by_role.return_value.wait_for.side_effect = PlaywrightTimeout("missing")
-        page.locator.return_value.inner_text.return_value = "No Records Found"
+        page, search = search_page(body="No Records Found")
         with self.assertRaises(browser.MatterNotFound):
             browser._retry(lambda: browser._find_matter(page, "M99999"))
         self.assertEqual(page.goto.call_count, 1)
+        search.click.assert_not_called()
+
+    def test_not_found_dialog_stops_before_search_click(self):
+        page, search = search_page(dialog=True)
+        with self.assertRaises(browser.MatterNotFound):
+            browser._retry(lambda: browser._find_matter(page, "M99999"))
+        search.click.assert_not_called()
+        self.assertEqual(page.goto.call_count, 1)
+
+    def test_dialog_covering_search_is_not_retried(self):
+        page, search = search_page(dialog_after_click=True)
+        with self.assertRaises(browser.MatterNotFound):
+            browser._retry(lambda: browser._find_matter(page, "M99999"))
+        self.assertEqual(page.goto.call_count, 1)
+        search.click.assert_called_once()
 
     def test_wrong_displayed_matter_does_not_mean_requested_matter_is_missing(self):
         with patch.object(browser, "_text_any", return_value="M12345"):
