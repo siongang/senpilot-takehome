@@ -86,7 +86,33 @@ Docker restarts services after process exit or reboot. An unhealthy-but-running 
 
 ## Updates, backup, and rollback
 
-After reviewing and publishing a new revision:
+### Automatic deployment from GitHub
+
+The [Test and deploy workflow](../.github/workflows/deploy.yml) runs Python tests and Compose validation for pull requests and pushes to `main`. A successful push to `main` uploads the exact tested Git revision and deploys it to the existing Droplet. It can also be run manually from GitHub Actions on `main`. Pull requests never receive deployment credentials or deploy code.
+
+Repository Actions secrets:
+
+| Name | Value |
+| --- | --- |
+| `DEPLOY_HOST` | Droplet IPv4 address. |
+| `DEPLOY_SSH_KEY` | Dedicated Ed25519 deployment private key, never your personal SSH key. |
+| `DEPLOY_KNOWN_HOSTS` | Pinned host public key obtained through an already trusted SSH connection. |
+
+Application API keys stay in `/opt/senpilot/.env`; they are not needed in Actions. The deployment key's `authorized_keys` entry uses `restrict,command="/usr/local/sbin/senpilot-actions-ssh"` and only permits `upload <40-character SHA>` and `deploy <40-character SHA>`. No general SSH shell, port forwarding, or SCP is allowed with this key. Deployments can still run the repository's Dockerfile with Docker privileges, so only trusted changes should reach `main`.
+
+One-time server bootstrap installs `deploy/ssh-command.sh` as `/usr/local/sbin/senpilot-actions-ssh` and `deploy/release.sh` as `/usr/local/sbin/senpilot-release`, both owned by root with mode 700, then adds the restricted public key. Updating these installed bootstrap scripts requires the operator's SSH access; updating application code requires only a push to `main`.
+
+The server serializes deployments with `flock`. Each revision has a source directory at `/opt/senpilot/releases/<SHA>` and an image tagged `senpilot-agent:<SHA>`. It builds and runs tests in that image before stopping the current services. It then backs up the stopped runtime volume, starts the new web/worker services, checks readiness and SQLite integrity, and records the revision in `/opt/senpilot/deployed-revision`. `/opt/senpilot/current` points to the latest successful source directory.
+
+The Compose project and `senpilot_runtime` volume retain their existing names. The tunnel and Caddy services are not restarted by deployments. A worker interrupted by a deployment recovers its job after the existing lease expires; send retries retain their existing idempotency protection.
+
+If startup or readiness fails, the script attempts to restart the previous image with its previous Compose file and reports failure to Actions. It preserves runtime data and does not automatically restore an old database or reverse schema migrations. An incompatible database migration requires manual recovery using the pre-deployment backup. Build and test failures leave the running app untouched.
+
+Release directories, images, and runtime backups are retained for recovery. Monitor disk space and remove older releases/images/backups when they are no longer needed; keep the current and previous release, and copy important backups off the Droplet. This workflow does not add a hosting service or a paid deployment subscription.
+
+### Manual update
+
+For a Git-checkout deployment without Actions, after reviewing and publishing a new revision:
 
 ```sh
 git pull --ff-only
@@ -96,13 +122,13 @@ docker compose --env-file .env -f deploy/compose.yaml up -d web worker
 
 Back up before upgrades with `bash deploy/backup.sh`. It briefly stops intake/processing, copies SQLite (including WAL) and files from a consistent stopped state, and restarts both services. AgentMail retries delivery while intake is down. Backups are under ignored `backups/`; download them to another machine. Keep secrets separately. Do not run `docker compose down -v`: `-v` deletes the database/files.
 
-For rollback, retain the previous Git revision and image, return to that revision, rebuild, and recreate the app services. Current migrations are additive; future incompatible migrations require a matching DB backup. Restore a runtime backup only with web/worker stopped, into the `senpilot_runtime` volume. Verify status before enabling intake. Database recovery can replay work; reconcile provider threads before resending uncertain deliveries.
+For rollback, retain the previous Git revision and image, return to that revision, rebuild, and recreate the app services. An incompatible migration requires a matching DB backup. Restore a runtime backup only with web/worker stopped, into the `senpilot_runtime` volume. Verify status before enabling intake. Database recovery can replay work; reconcile provider threads before resending uncertain deliveries.
 
 ## Current verification
 
 Verified on October 24, 2026: Docker installed on the Ubuntu Droplet; image built; all 66 tests passed inside that image; webhook registered; public HTTPS health and signature rejection passed; hosted OpenAI extraction passed; a ten-file Other Documents scrape produced a valid ZIP; an external Key Documents email completed in about 12 seconds with six valid PDFs and recipient-confirmed delivery/opening. Signed duplicate delivery created no additional job or reply. Files survived container replacement, completed job state survived an app restart, SQLite integrity passed, and stopped-state backups were copied off the server.
 
-This first deployment transferred an archive of the current local source to `/opt/senpilot`; it is not a Git checkout. The Git update commands above apply after the latest changes are published and a checkout-based release process is established. For now, preserve the source archive/image and deploy reviewed source archives to this directory without copying runtime data or secrets into the image.
+The first deployment transferred source directly to `/opt/senpilot`; that directory is not a Git checkout. Actions now deploys Git archives into revision-specific release directories instead of running `git pull` there. Use `/opt/senpilot/current/deploy/compose.yaml` and `/opt/senpilot/.env` for manual operations after the first Actions deployment. For manual recreation, set `SENPILOT_IMAGE=senpilot-agent:$(cat /opt/senpilot/deployed-revision)` so Compose uses the deployed revision's image. Keep runtime data and secrets outside release archives and images.
 
 The current URL is a development Quick Tunnel. A stable HTTPS address, whole-host reboot verification, and live hosted fault cases remain open. Docker's restart policy preserves processes, but does not repair AgentMail's URL if a Quick Tunnel address changes after restart. Do not treat that temporary URL as the final submission endpoint.
 

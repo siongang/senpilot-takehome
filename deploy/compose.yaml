@@ -1,7 +1,7 @@
 name: senpilot
 
 x-app: &app
-  image: senpilot-agent:local
+  image: ${SENPILOT_IMAGE:-senpilot-agent:local}
   build:
     context: ..
     dockerfile: deploy/Dockerfile

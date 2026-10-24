@@ -41,6 +41,8 @@ For webhook intake, configure `AGENTMAIL_WEBHOOK_SECRET` and run the receiver an
 
 Register `POST /webhooks/agentmail` for AgentMail's `message.received` event. The receiver verifies the raw body's Svix signature and durably saves the message identity before returning 204. The worker fetches canonical content and processes the job without polling the inbox. `/healthz` reports HTTP liveness and `/readyz` checks database access. See [DigitalOcean deployment](./deploy/README.md) for Docker Compose, persistent storage, temporary development HTTPS, stable HTTPS, and backups.
 
+GitHub Actions runs tests on pull requests and automatically deploys successful pushes to `main` to the Droplet. Deployment builds and tests a revision-specific image, backs up runtime data, recreates only the web/worker services, and checks readiness. The API keys and persistent database stay on the server. See [deployment setup and recovery](./deploy/README.md#automatic-deployment-from-github).
+
 ## Request processing and recovery
 
 Incoming email is persisted before OpenAI parsing. The model extracts all requested matter numbers and one shared canonical category, and local validation rejects malformed or fabricated matter numbers. Missing or ambiguous requests receive clarification; temporary API failures stay in the durable retry queue. OpenAI interprets the email; Playwright performs website navigation and downloads, and the response uses scraped facts.
