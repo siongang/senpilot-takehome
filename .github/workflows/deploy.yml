@@ -26,7 +26,7 @@ jobs:
         run: |
           python -m pip install .
           python -m unittest discover -s tests -v
-          bash -n deploy/release.sh deploy/ssh-command.sh deploy/backup.sh
+          for script in deploy/*.sh; do bash -n "$script"; done
           cp .env.example .env
           docker compose --env-file .env.example -f deploy/compose.yaml config --quiet
 
@@ -82,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$DEPLOY_HOST"
-          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/release.tar.gz"
+          git archive --format=tar.gz HEAD -- . ':!runtime' ':!backups' ':!.env' ':!.venv' > "$RUNNER_TEMP/release.tar.gz"
           ssh_options=(-i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
           ssh "${ssh_options[@]}" "root@$DEPLOY_HOST" "upload $GITHUB_SHA" < "$RUNNER_TEMP/release.tar.gz"
           ssh "${ssh_options[@]}" "root@$DEPLOY_HOST" "deploy $GITHUB_SHA"
