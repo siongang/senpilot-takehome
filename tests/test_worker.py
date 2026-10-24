@@ -65,6 +65,22 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("The ZIP contains 1 file", job["reply_text"])
         self.assertIsNone(self.worker.process_next())
 
+    def test_inventory_is_persisted_and_counted_in_email(self):
+        result = self.result("M12205", "Exhibits", self.settings.runtime_dir / "inventory")
+        result.category_counts = {name: int(name in ("Exhibits", "Key Documents", "Other Documents"))
+                                  for name in CATEGORIES}
+        result.document_ids_by_category = {name: [] for name in CATEGORIES}
+        result.document_ids_by_category.update({
+            "Exhibits": ["H-1"], "Key Documents": ["97289"], "Other Documents": ["97289"],
+        })
+        self.scraper.side_effect = None
+        self.scraper.return_value = result
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.assertIn('"document_ids_by_category"', job["result_json"])
+        self.assertIn("Total documents in this matter: 2.", job["reply_text"])
+
     def multiple(self):
         self.message['subject'] = 'M12205 and M12345 exhibits'
         self.parser.return_value = ParsedRequest('M12205', 'Exhibits', matter_numbers=('M12205', 'M12345'))

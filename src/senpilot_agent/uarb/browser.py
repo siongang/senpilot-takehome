@@ -11,6 +11,7 @@ from playwright.sync_api import (
 )
 
 from senpilot_agent.models import CATEGORIES, Document, MatterResult
+from senpilot_agent.uarb.lists import read_list_pdf
 
 
 UARB_URL = "https://uarb.novascotia.ca/fmi/webd/UARB15"
@@ -337,13 +338,74 @@ def _find_matter(page: Page, matter_number: str) -> None:
 
 def _open_category(page: Page, category: str) -> None:
     """Open a nonempty category and wait for its downloadable rows."""
-    page.get_by_role(
+    tab = page.get_by_role(
         "button", name=re.compile(TAB_PATTERN.format(re.escape(category)))
-    ).click()
+    )
+    tab.click()
+    # The old grid remains mounted briefly while WebDirect changes layouts.
+    # Wait for the selected tab before using Save List or the download rows.
+    page.locator(".iwps_button_bar_segment.fm-selected").filter(has=tab).first.wait_for(
+        state="visible", timeout=30000,
+    )
     rows = page.locator("tr.v-grid-row[role='row']").filter(
         has=page.get_by_role("button", name="GO GET IT")
     )
     rows.first.wait_for(state="visible", timeout=30000)
+
+
+def _download_list(page: Page, category: str, folder: Path) -> Path:
+    """Save the report offered by Save List, always closing its download dialog."""
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / (category.lower().replace(" ", "-") + ".pdf")
+    try:
+        page.get_by_role("button", name="Save List", exact=True).click(timeout=10000)
+        controls = page.locator('[role="button"].fm-download-button:visible')
+        controls.first.wait_for(state="visible", timeout=20000)
+        if controls.count() != 1 or not controls.first.inner_text().strip().lower().endswith(".pdf"):
+            raise DownloadError("Save List did not offer exactly one PDF")
+        with page.expect_download(timeout=60000) as event:
+            controls.first.click(timeout=10000)
+        download = event.value
+        if download.failure():
+            raise DownloadError("Saved list PDF download failed")
+        download.save_as(destination)
+        _validate_file(destination)
+        _close_download_dialog(page)
+        return destination
+    except Exception:
+        destination.unlink(missing_ok=True)
+        try:
+            _close_download_dialog(page)
+        except Exception:
+            pass
+        raise
+
+
+def _inventory_matter(page: Page, result: MatterResult, folder: Path) -> None:
+    """Inventory every nonempty tab independently of the attachment limit."""
+    inventory = {}
+    paths = {}
+    for category in CATEGORIES:
+        expected = result.category_counts[category]
+        if expected == 0:
+            inventory[category] = []
+            continue
+
+        def export_category():
+            _open_category(page, category)
+            path = _download_list(page, category, folder)
+            try:
+                identifiers = read_list_pdf(path, result.matter_number, category, expected)
+            except Exception as error:
+                raise DownloadError("Could not verify {} saved list: {}".format(category, error)) from error
+            return path, identifiers
+
+        path, identifiers = _retry(export_category)
+        inventory[category] = identifiers
+        paths[category] = str(path)
+    # Publish a total only after all five category inventories are complete.
+    result.document_ids_by_category = inventory
+    result.list_pdf_paths = paths
 
 
 def _scroll_documents(page: Page) -> bool:
@@ -436,6 +498,7 @@ def scrape_matter(
             try:
                 _retry(lambda: _find_matter(page, matter_number))
                 result = _retry(lambda: _read_header(page, matter_number, requested_category))
+                _inventory_matter(page, result, output_dir / "lists")
                 if result.category_counts[requested_category] == 0:
                     return result
                 _retry(lambda: _open_category(page, requested_category))

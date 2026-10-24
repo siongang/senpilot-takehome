@@ -31,6 +31,19 @@ def _downloaded(count, files_each=1):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_verified_inventory_total_is_separate_from_listing_and_attachment_counts(self):
+        result = _matter("Key Documents", _counts(**{"Key Documents": 1, "Other Documents": 1}), _downloaded(1))
+        result.document_ids_by_category = {name: [] for name in CATEGORIES}
+        result.document_ids_by_category.update({"Key Documents": ["97289"], "Other Documents": ["97289"]})
+        body = format_result(result, 1)
+        self.assertIn("Total documents in this matter: 1.", body)
+        self.assertIn("including confidential records", body)
+        self.assertIn("may contain multiple files", body)
+        self.assertIn("These five tabs show 2 listings.", body)
+        self.assertIn("The ZIP contains 1 file", body)
+        result.document_ids_by_category = None
+        self.assertIn("Total documents in this matter: unavailable", format_result(result, 1))
+
     def test_one_file_uses_singular_wording(self):
         title = (
             "GAS: Gas Pricing effective June 27, 2025\n"

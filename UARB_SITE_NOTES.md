@@ -62,6 +62,30 @@ After selecting the requested tab, iterate document **rows**, not the page's glo
 
 Click `row.get_by_role("button", name="GO GET IT")` for the current row. In the dialog, read the actual filename from `.fm-download-button`; do not derive it blindly from the document ID because filenames or file types may differ. Click that filename control while capturing the browser download, verify the saved file, then click **Close**. Re-query the grid before selecting the next row because FileMaker can rerender it. The Other Documents grid mounted roughly 12 rows at a time, so scrolling is needed if fewer than 10 eligible/successful rows are available in the initial viewport. If a dialog offers multiple files for one document row, track both the row count and ZIP file count explicitly.
 
+## Save List inventory (October 24, 2026)
+
+Each nonempty document tab offers `get_by_role("button", name="Save List", exact=True)`.
+It opens the normal Download Files dialog: Exhibits offered `ExhibitList.pdf`, Key
+Documents `KeyDocList.pdf`, and Other Documents `OtherDocumentsList.pdf`. Download
+the visible `.fm-download-button` PDF and close the dialog before selecting the
+next tab. Wait for the requested tab's `.iwps_button_bar_segment.fm-selected`
+state because the preceding grid can remain visible during a layout transition.
+
+These reports include all rows, including Confidential records. M12205 exported
+13 Exhibits over two pages, six Key Documents over one page, and 43 Other
+Documents over three pages. All six Key Document numbers also occur in Other
+Documents, yielding 56 distinct document/exhibit numbers from 62 tab listings.
+Exhibits use labels such as `H-4(C)-iii`; other inspected reports use numeric
+document numbers. PDF layout extraction preserves the number column and wrapped
+descriptions. Validate the title, matter number, table header, and total rows
+before accepting a report. Save List reports do not enumerate each document's
+attached binaries or map different identifiers to the same underlying file.
+
+A local full scrape with all three report exports and two requested Key Document
+attachments completed in 10.4 seconds. The ZIP contained only the two requested
+files. Nonzero Transcript and Recording report formats remain to be verified
+live; M12205 has zero of both.
+
 ## Remaining implementation probes
 
 - Confirm whether the grid scrolls correctly for a matter with many inaccessible rows. The M12205 sample reached ten saved Other Documents by skipping two large PDFs and selecting later mounted rows.

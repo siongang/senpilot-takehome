@@ -66,6 +66,17 @@ def _listing_summary(total: int) -> str:
     ).format(_plural(total, "listing"))
 
 
+def _document_total(result: MatterResult) -> str:
+    total = result.document_total
+    if total is None:
+        return "Total documents in this matter: unavailable (saved-list inventory was not recorded)."
+    return (
+        "Total documents in this matter: {}. Counted from the saved lists, with repeated "
+        "document numbers counted once, including confidential records. "
+        "A listed document may contain multiple files."
+    ).format(total)
+
+
 def _attachment_line(result: MatterResult, attached_count: int) -> str:
     category = result.requested_category
     downloaded = len(result.successful_documents)
@@ -111,6 +122,8 @@ def format_result(
         "Outcome: {}".format(result.outcome),
         "Date received: {}".format(_display_date(result.date_received)),
         "{}: {}".format(result.second_date_label, _display_date(result.second_date)),
+        "",
+        _document_total(result),
         "",
         "Listings",
     ])

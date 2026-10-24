@@ -50,10 +50,22 @@ class MatterResult:
     documents: List[Document] = field(default_factory=list)
     scraped_at: str = field(default_factory=utc_now)
     source_url: str = "https://uarb.novascotia.ca/fmi/webd/UARB15"
+    document_ids_by_category: Optional[Dict[str, List[str]]] = None
+    list_pdf_paths: Dict[str, str] = field(default_factory=dict)
 
     @property
     def listing_total(self) -> int:
         return sum(self.category_counts.values())
+
+    @property
+    def document_total(self) -> Optional[int]:
+        """Count exported document numbers only when every category is complete."""
+        inventory = self.document_ids_by_category
+        if inventory is None or set(inventory) != set(CATEGORIES):
+            return None
+        if any(len(inventory[name]) != self.category_counts[name] for name in CATEGORIES):
+            return None
+        return len({source_id.upper() for ids in inventory.values() for source_id in ids})
 
     @property
     def successful_documents(self) -> List[Document]:

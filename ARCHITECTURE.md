@@ -79,7 +79,7 @@ Keep browser output structured. A matter lookup produces one metadata snapshot, 
 | `category_counts` | `snapshot_id`, category, nullable count, observation status | Exactly five category observations. `NULL` means unavailable; `0` means the site showed none. |
 | `documents` | `job_id`, source document ID if visible, title, security label, date filed, extension, displayed position, download status, saved path, byte size, checksum, error | Tracks the selected documents and confirms what went into the ZIP. |
 
-The first version need not enumerate and store every document in every category. Read all five displayed counts, then record rows for up to 10 candidates in the requested category. This distinction keeps the source data model honest: a displayed count is not a list of files we have individually inspected.
+Every nonempty category now exports its Save List PDF. The scraper stores `document_ids_by_category` and `list_pdf_paths` in the result JSON, validates each report against the requested matter/category and tab count, and counts distinct document/exhibit numbers across the complete inventory. Zero-count tabs contribute empty lists. Only the requested category's Public attachments are downloaded, up to the file and size limits. Report PDFs are retained separately and excluded from the ZIP. A listed document may offer multiple attachments, and records with different numbers may be aliases; these reports establish a document-number count rather than a unique-binary count.
 
 ### What the supplied M12205 screenshots and live page show
 
@@ -132,6 +132,7 @@ SQLite requires a persistent volume and a single-host deployment. A host with ep
 - If the matter or category is missing, ambiguous, or unsupported, send a short clarification instead of queuing a scrape.
 - Use the website's title, status, type/category, and date fields as labeled; do not invent unavailable facts.
 - Report all five category counts and a clearly labeled aggregate. Verify whether categories overlap before calling the aggregate a unique-file total.
+- Report the distinct document/exhibit-number total from validated Save List PDFs for every nonempty category, including confidential records. Retry failed or incomplete exports rather than publishing a partial total. Preserve existing reply text when retrying an uncertain delivery.
 - Select up to 10 Public files in the site's displayed row order. The site's sorting behavior can change, so record selected IDs in the result.
 - Report the available count, the number attached, and any partial failure. For a zero-count category, attach a valid empty ZIP and say that it is empty.
 - Keep saved files under a conservative 4 MB total budget before ZIP creation to stay under AgentMail's 6 MB inline request limit after Base64 encoding. Skip an oversized row and continue to later rows; report skips in the reply.
