@@ -18,9 +18,9 @@ from senpilot_agent.email.message import message_text
 from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import MatterResult, utc_now
 from senpilot_agent.output.archive import create_zip
-from senpilot_agent.output.response import format_empty, format_failure, format_result
+from senpilot_agent.output.response import format_empty, format_failure, format_not_found, format_result
 from senpilot_agent.requests.parser import RequestParsingError, parse_request
-from senpilot_agent.uarb.browser import scrape_matter
+from senpilot_agent.uarb.browser import MatterNotFound, scrape_matter
 
 
 LOG = logging.getLogger(__name__)
@@ -163,15 +163,25 @@ class Worker:
                     self._send(job, "Hi,\n\n{}\n\nBest,\nRegulatory Agent".format(job["parse_error"]), None, lost)
                     return job_id
 
+                # Resume a saved text-only response without searching again or
+                # changing the payload after an uncertain email delivery.
+                if job.get("send_started_at") and not job["result_json"] and not job["zip_path"]:
+                    self._send(job, job["reply_text"], None, lost)
+                    return job_id
+
                 folder = self.settings.runtime_dir / "jobs" / job_id
                 if job["result_json"]:
                     result = MatterResult.from_dict(json.loads(job["result_json"]))
                 else:
                     self._update(job, status="downloading")
-                    result = scrape_matter(
-                        job["matter_number"], job["requested_category"], folder / ("downloads-attempt-{}".format(job["attempts"])),
-                        max_documents=self.settings.max_documents, headless=self.settings.headless,
-                    )
+                    try:
+                        result = scrape_matter(
+                            job["matter_number"], job["requested_category"], folder / ("downloads-attempt-{}".format(job["attempts"])),
+                            max_documents=self.settings.max_documents, headless=self.settings.headless,
+                        )
+                    except MatterNotFound:
+                        self._send(job, format_not_found(job["matter_number"]), None, lost)
+                        return job_id
                     if not result.saved_files and any(item.status == "failed" for item in result.documents):
                         raise RuntimeError("No selected public documents could be downloaded")
                     self._update(job, result_json=json.dumps(result.to_dict()), status="packaging")

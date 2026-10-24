@@ -53,6 +53,12 @@ class ScraperTests(unittest.TestCase):
             browser._retry(lambda: browser._find_matter(page, "M99999"))
         self.assertEqual(page.goto.call_count, 1)
 
+    def test_wrong_displayed_matter_does_not_mean_requested_matter_is_missing(self):
+        with patch.object(browser, "_text_any", return_value="M12345"):
+            with self.assertRaises(RuntimeError) as raised:
+                browser._read_header(MagicMock(), "M99999", "Key Documents")
+        self.assertNotIsInstance(raised.exception, browser.MatterNotFound)
+
     def test_multi_file_failure_rolls_back_attempt_before_retry(self):
         with tempfile.TemporaryDirectory() as folder:
             page = MagicMock()

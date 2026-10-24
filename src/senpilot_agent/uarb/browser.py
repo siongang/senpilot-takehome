@@ -83,7 +83,7 @@ def _read_counts(page: Page) -> Dict[str, int]:
 def _read_header(page: Page, matter_number: str, category: str) -> MatterResult:
     found = _text_any(page, ".fm_object_286 .text", ".fm_object_219 .text").upper()
     if found != matter_number:
-        raise MatterNotFound(
+        raise RuntimeError(
             "Requested {}, but the site displayed {}".format(matter_number, found)
         )
     second_date_label = (

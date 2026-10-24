@@ -11,6 +11,7 @@ from senpilot_agent.models import CATEGORIES, Document, MatterResult
 from senpilot_agent.output.response import format_empty, format_result
 from senpilot_agent.requests.parser import ParsedRequest, RequestParsingError
 from senpilot_agent.worker import Worker
+from senpilot_agent.uarb.browser import MatterNotFound
 
 
 PAST = "2000-01-01T00:00:00+00:00"
@@ -124,6 +125,42 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
         self.scraper.assert_not_called()
         self.assertIn("Please specify", self.worker.mail.reply.call_args.args[1])
+
+    def test_missing_matter_replies_without_zip_on_first_attempt(self):
+        self.parser.return_value = ParsedRequest("M99999", "Key Documents")
+        self.scraper.side_effect = MatterNotFound("No Records Found")
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["attempts"], 1)
+        self.assertIsNone(job["zip_path"])
+        self.assertIn("M99999 was not found", job["reply_text"])
+        self.worker.mail.reply.assert_called_once_with(
+            "incoming", job["reply_text"], zip_path=None, idempotency_key=job["id"])
+        self.assertIsNone(self.worker.process_failure_notification())
+
+    def test_missing_matter_delivery_retry_reuses_saved_reply_without_search(self):
+        self.scraper.side_effect = MatterNotFound("No Records Found")
+        self.worker.mail.reply.side_effect = [TimeoutError("uncertain"), {"message_id": "accepted"}]
+        self.enqueue()
+        job_id = self.worker.process_next()
+        self.assertEqual(self.saved(job_id)["status"], "retry_pending")
+        self.due(job_id)
+        self.worker.process_next()
+        self.assertEqual(self.saved(job_id)["status"], "completed")
+        self.scraper.assert_called_once()
+        self.assertEqual(self.worker.mail.reply.call_args_list[0], self.worker.mail.reply.call_args_list[1])
+
+    def test_missing_matter_does_not_block_other_requested_matter(self):
+        self.multiple()
+        self.scraper.side_effect = lambda matter, *args, **kwargs: (self.result(matter, *args, **kwargs)
+            if matter == "M12345" else (_ for _ in ()).throw(MatterNotFound("No Records Found")))
+        first = self.saved(self.worker.process_next())
+        second = self.saved(self.worker.process_next())
+        self.assertEqual([first["status"], second["status"]], ["completed", "completed"])
+        self.assertIsNone(first["zip_path"])
+        self.assertTrue(Path(second["zip_path"]).is_file())
+        self.assertEqual(self.worker.mail.reply.call_count, 2)
 
     def test_transient_parser_failure_remains_durable(self):
         self.parser.side_effect = RequestParsingError("Temporary API failure")

@@ -60,6 +60,11 @@ def format_empty(result: MatterResult) -> str:
     )
 
 
+def format_not_found(matter_number: str) -> str:
+    return ("Hi,\n\nMatter {} was not found in the UARB records. "
+            "Please check the matter number and try again.\n\nBest,\nRegulatory Agent").format(matter_number)
+
+
 def format_failure(job: dict) -> str:
     """Explain a terminal outcome without leaking exception or credential details."""
     if job.get("send_started_at"):
