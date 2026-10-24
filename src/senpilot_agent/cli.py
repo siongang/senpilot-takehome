@@ -47,7 +47,7 @@ def main() -> None:
             json.dumps(result.to_dict(), indent=2), encoding="utf-8"
         )
         print("Matter snapshot:", snapshot)
-        print("Downloaded documents:", len(result.successful_documents))
+        print("Downloaded files:", len(result.saved_files))
         if result.saved_files:
             archive = create_zip(
                 result, folder / "{}-documents.zip".format(result.matter_number)

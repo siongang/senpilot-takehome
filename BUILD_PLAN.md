@@ -2,7 +2,7 @@
 
 This is the execution checklist for the [architecture](./ARCHITECTURE.md). The target is a live email address that accepts one matter number and one document type, downloads up to 10 matching files from the public documents database, and replies with a ZIP plus verified matter metadata and counts.
 
-**Progress on October 24, 2026:** The Python package, SQLite queue, Playwright scraper, ZIP builder, AgentMail adapter, and worker are implemented. Automated runs fetched PDFs from multiple M12205 tabs, including ten Other Documents and a zero-count Transcripts case. One real inbound Key Documents email produced a threaded reply with six PDFs in a ZIP; the recipient confirmed it arrived and opened. Persistent deployment, a public code link, and the demo remain open. The checklist below remains the acceptance plan, not a claim that every item is complete.
+**Progress on October 24, 2026:** The Python package, SQLite queue, Playwright scraper, ZIP builder, AgentMail adapter, and worker are implemented. Automated runs fetched PDFs from multiple M12205 tabs, including ten Other Documents and a zero-count Transcripts case. One real inbound Key Documents email produced a threaded reply with six PDFs in a ZIP; the recipient confirmed it arrived and opened. Subsequent work added OpenAI structured request parsing (live parser smoke test passed), modular browser operations with bounded recovery, and durable parsing/lease/retry improvements. The updated worker requires a fresh external email acceptance test. Persistent deployment, public code-link verification, and the demo remain open. Older checklist entries below are the original acceptance plan and may not reflect subsequent implementation; use the code and current README for implementation status.
 
 ## Scope and definition of done
 
@@ -26,7 +26,8 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 - [ ] P1: Clear clarification replies for missing or ambiguous matter/category.
 - [ ] P1: Immediate acknowledgment and status replies such as “is it ready?”
 - [ ] P2: Reuse matter context across follow-up emails and process multiple requests from one email.
-- [ ] P2: LLM parsing, PDF-content summaries, full document indexing, vector search, and a dashboard.
+- [x] OpenAI structured request parsing, promoted into the current scope.
+- [ ] P2: PDF-content summaries, full document indexing, vector search, and a dashboard.
 
 The response uses a deterministic template. The matter page provides the fields needed for the summary; reading the PDFs is unnecessary for this requirement.
 
@@ -37,7 +38,7 @@ The response uses a deterministic template. The matter page provides the fields 
 - **Incoming trigger:** Start with polling if it speeds local development. Run the poller continuously on the final host. A webhook is optional and should not change job or scraper interfaces.
 - **Queue and database:** One SQLite database on persistent storage; the `jobs` table is the queue. Run one browser job at a time.
 - **Files:** Give each job its own temporary directory. Keep downloads and ZIP until delivery succeeds; clean them up through a separate retention policy.
-- **Request parsing:** Match a matter number and one canonical category from the email subject and current message body. Validate both. Keep parsing behind a function so it can be upgraded later.
+- **Request parsing:** Use OpenAI structured extraction for a matter number and one canonical category from the email subject and current message body; validate locally. Persist intake before parsing so API failures are retryable.
 - **Document choice:** Use a stable, documented order, initially the order shown on the requested tab. Record each attempted row and whether its **Go Get It** download succeeded.
 - **Response:** Use the site's exact metadata labels and counts. A field that cannot be read is unavailable, not zero. Report the actual ZIP content count.
 

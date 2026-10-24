@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, TypeVar
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout, sync_playwright
+from playwright.sync_api import (
+    Error as PlaywrightError, Page, TimeoutError as PlaywrightTimeout, sync_playwright,
+)
 
 from senpilot_agent.models import CATEGORIES, Document, MatterResult
 
@@ -131,15 +133,85 @@ def _visible_documents(page: Page, start_position: int) -> List[Document]:
     return documents
 
 
-def _download_row(page: Page, document: Document, folder: Path) -> None:
-    row = page.locator("tr.v-grid-row[role='row']").filter(
-        has=page.get_by_text(document.source_id, exact=True)
-    ).first
-    row.get_by_role("button", name="GO GET IT").click(timeout=10000)
+class DownloadError(RuntimeError):
+    """The site offered a file but it could not be saved and validated."""
+
+
+T = TypeVar("T")
+
+
+def _retry(operation: Callable[[], T], attempts: int = 2) -> T:
+    """Retry browser/file transfer failures; programming errors propagate."""
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except (PlaywrightError, DownloadError):
+            if attempt + 1 == attempts:
+                raise
+    raise ValueError("attempts must be positive")
+
+
+def _capture_failure(page: Page, folder: Path, label: str, error: Exception) -> None:
+    """Diagnostics must never hide the original error."""
     try:
+        diagnostics = folder / "diagnostics"
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        stem = _unique_path(diagnostics, _safe_name(label) + ".txt")
+        stem.write_text(str(error), encoding="utf-8")
+        try:
+            page.screenshot(path=str(stem.with_suffix(".png")), timeout=5000)
+        except Exception:
+            pass
+        try:
+            stem.with_suffix(".html").write_text(page.content(), encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _close_download_dialog(page: Page) -> None:
+    # Hidden WebDirect controls can remain in the DOM after a dialog closes.
+    close = page.get_by_role("button", name="Close", exact=True)
+    for index in range(close.count() - 1, -1, -1):
+        candidate = close.nth(index)
+        if candidate.is_visible():
+            candidate.click(timeout=10000)
+            candidate.wait_for(state="hidden", timeout=10000)
+            return
+    close = page.get_by_text("Close", exact=True)
+    for index in range(close.count() - 1, -1, -1):
+        candidate = close.nth(index)
+        if candidate.is_visible():
+            candidate.click(timeout=10000)
+            candidate.wait_for(state="hidden", timeout=10000)
+            return
+    if page.locator('[role="button"].fm-download-button:visible').count():
+        raise DownloadError("Download dialog remained open without a Close control")
+
+
+def _validate_file(destination: Path) -> None:
+    if destination.stat().st_size == 0:
+        raise DownloadError("Downloaded file is empty: " + destination.name)
+    if destination.suffix.lower() == ".pdf":
+        with destination.open("rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise DownloadError("Downloaded file is not a PDF: " + destination.name)
+
+
+def _download_row(page: Page, document: Document, folder: Path, *, max_files: int = 10) -> None:
+    """Save a row atomically: failures remove every file from this attempt."""
+    saved: List[Path] = []
+    try:
+        row = page.locator("tr.v-grid-row[role='row']").filter(
+            has=page.get_by_text(document.source_id, exact=True)
+        ).first
+        row.get_by_role("button", name="GO GET IT").click(timeout=10000)
         controls = page.locator('[role="button"].fm-download-button:visible')
         controls.first.wait_for(state="visible", timeout=20000)
         for index in range(controls.count()):
+            if len(saved) >= max_files:
+                break
             control = controls.nth(index)
             offered_name = control.inner_text().strip()
             if not offered_name:
@@ -147,32 +219,139 @@ def _download_row(page: Page, document: Document, folder: Path) -> None:
             with page.expect_download(timeout=60000) as event:
                 control.click(timeout=10000)
             download = event.value
-            if download.failure():
-                raise RuntimeError(
-                    "Download failed for {}: {}".format(
-                        document.source_id, download.failure()
-                    )
-                )
-            filename = download.suggested_filename or offered_name
-            destination = _unique_path(folder, filename)
+            failure = download.failure()
+            if failure:
+                raise DownloadError("Download failed for {}: {}".format(document.source_id, failure))
+            destination = _unique_path(folder, download.suggested_filename or offered_name)
+            saved.append(destination)
             download.save_as(destination)
-            if destination.stat().st_size == 0:
-                destination.unlink(missing_ok=True)
-                raise RuntimeError("Downloaded file is empty: " + filename)
-            if destination.suffix.lower() == ".pdf":
-                with destination.open("rb") as handle:
-                    if handle.read(5) != b"%PDF-":
-                        destination.unlink(missing_ok=True)
-                        raise RuntimeError("Downloaded file is not a PDF: " + filename)
-            document.filenames.append(destination.name)
-            document.saved_paths.append(str(destination))
-    finally:
-        close = page.get_by_role("button", name="Close", exact=True)
-        if close.count():
-            close.last.click(timeout=10000)
-        else:
-            page.get_by_text("Close", exact=True).last.click(timeout=10000)
-    document.status = "downloaded" if document.saved_paths else "failed"
+            _validate_file(destination)
+        if not saved:
+            raise DownloadError("No downloadable files for " + document.source_id)
+        _close_download_dialog(page)
+    except Exception:
+        for path in saved:
+            path.unlink(missing_ok=True)
+        try:
+            _close_download_dialog(page)
+        except Exception:
+            pass
+        raise
+    document.saved_paths = [str(path) for path in saved]
+    document.filenames = [path.name for path in saved]
+    document.status = "downloaded"
+    document.error = None
+
+
+def _find_matter(page: Page, matter_number: str) -> None:
+    """Reset navigation before each attempt and submit through keyboard events."""
+    page.goto(UARB_URL, wait_until="domcontentloaded", timeout=60000)
+    field = page.locator(".fm_object_254 .text")
+    field.wait_for(state="visible", timeout=60000)
+    field.click()
+    page.locator('.fm_object_254 .text[contenteditable="true"]').wait_for(
+        state="visible", timeout=10000
+    )
+    # WebDirect reads keyboard/blur events; a bulk fill displays text but
+    # can submit an empty search value and show "No Records Found".
+    field.press("ControlOrMeta+A")
+    field.press_sequentially(matter_number, delay=70)
+    field.press("Tab")
+    # Some WebDirect sessions submit on blur; in others the Search
+    # control stays visible. Give the automatic transition a chance.
+    try:
+        page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
+            state="visible", timeout=5000
+        )
+    except PlaywrightTimeout:
+        search = page.locator(".fm_object_258 button")
+        if search.count():
+            search.click(timeout=10000)
+    try:
+        page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
+            state="visible", timeout=30000
+        )
+    except PlaywrightTimeout as error:
+        body = page.locator("body").inner_text(timeout=5000)
+        if "no records found" in body.lower():
+            raise MatterNotFound("Matter {} was not found".format(matter_number)) from error
+        raise
+
+
+def _open_category(page: Page, category: str) -> None:
+    """Open a nonempty category and wait for its downloadable rows."""
+    page.get_by_role(
+        "button", name=re.compile(TAB_PATTERN.format(re.escape(category)))
+    ).click()
+    rows = page.locator("tr.v-grid-row[role='row']").filter(
+        has=page.get_by_role("button", name="GO GET IT")
+    )
+    rows.first.wait_for(state="visible", timeout=30000)
+
+
+def _scroll_documents(page: Page) -> bool:
+    mounted = page.locator("tr.v-grid-row[role='row']")
+    if mounted.count() == 0:
+        return False
+    mounted.last.hover()
+    page.mouse.wheel(0, 650)
+    page.wait_for_timeout(350)
+    return True
+
+
+def _collect_documents(page: Page, result: MatterResult, output_dir: Path, limit: int) -> None:
+    """Walk virtualized rows in display order, with one result per source ID."""
+    seen = set()
+    stagnant_scrolls = 0
+    while len(result.saved_files) < limit:
+        visible = _retry(lambda: _visible_documents(page, len(seen) + 1))
+        fresh = []
+        for document in visible:
+            if document.source_id not in seen:
+                seen.add(document.source_id)
+                fresh.append(document)
+        for document in fresh:
+            document.display_position = len(result.documents) + 1
+            result.documents.append(document)
+            if document.security.lower() != "public":
+                document.status = "skipped"
+                document.error = "Security label: " + document.security
+                continue
+            try:
+                remaining = limit - len(result.saved_files)
+                _retry(lambda: _download_row(page, document, output_dir, max_files=remaining))
+                saved_bytes = sum(Path(path).stat().st_size for path in result.saved_files)
+                if saved_bytes > MAX_SAVED_BYTES:
+                    for path in document.saved_paths:
+                        Path(path).unlink(missing_ok=True)
+                    document.saved_paths.clear()
+                    document.filenames.clear()
+                    document.status = "skipped"
+                    document.error = "Attachment size budget exceeded"
+            except Exception as error:
+                document.status = "failed"
+                document.error = str(error)
+                _capture_failure(page, output_dir, "download-" + document.source_id, error)
+            if len(result.saved_files) >= limit:
+                return
+        if len(seen) >= result.category_counts[result.requested_category]:
+            return
+        stagnant_scrolls = stagnant_scrolls + 1 if not fresh else 0
+        if stagnant_scrolls >= 3 or not _scroll_documents(page):
+            return
+
+
+def _new_session(browser):
+    context = browser.new_context(
+        accept_downloads=True, viewport={"width": 1920, "height": 1080}
+    )
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        return context, page
+    except Exception:
+        context.close()
+        raise
 
 
 def scrape_matter(
@@ -183,7 +362,7 @@ def scrape_matter(
     max_documents: int = 10,
     headless: bool = True,
 ) -> MatterResult:
-    """Search one matter, save up to ten Public document rows, and return facts."""
+    """Search one matter, save up to ten Public files, and return facts."""
     matter_number = matter_number.upper()
     if not re.fullmatch(r"M\d{5}", matter_number):
         raise ValueError("Matter number must look like M12345")
@@ -194,103 +373,23 @@ def scrape_matter(
     output_dir.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(
-            accept_downloads=True, viewport={"width": 1920, "height": 1080}
-        )
-        page = context.new_page()
-        page.set_default_timeout(15000)
+        context = None
         try:
-            page.goto(UARB_URL, wait_until="domcontentloaded", timeout=60000)
-            field = page.locator(".fm_object_254 .text")
-            field.wait_for(state="visible", timeout=60000)
-            field.click()
-            page.locator('.fm_object_254 .text[contenteditable="true"]').wait_for(
-                state="visible", timeout=10000
-            )
-            # WebDirect reads keyboard/blur events; a bulk fill displays text but
-            # can submit an empty search value and show "No Records Found".
-            field.press_sequentially(matter_number, delay=70)
-            field.press("Tab")
-            # Some WebDirect sessions submit on blur; in others the Search
-            # control stays visible. Give the automatic transition a chance.
+            context, page = _new_session(browser)
             try:
-                page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
-                    state="visible", timeout=5000
-                )
-            except PlaywrightTimeout:
-                search = page.locator(".fm_object_258 button")
-                if search.count():
-                    search.click(timeout=10000)
-            try:
-                page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$")).wait_for(
-                    state="visible", timeout=30000
-                )
-            except PlaywrightTimeout as error:
-                raise MatterNotFound(
-                    "Matter {} did not open in the UARB site. Page said: {}".format(
-                        matter_number, page.locator("body").inner_text()[:350]
-                    )
-                ) from error
-            result = _read_header(page, matter_number, requested_category)
-            if result.category_counts[requested_category] == 0:
+                _retry(lambda: _find_matter(page, matter_number))
+                result = _retry(lambda: _read_header(page, matter_number, requested_category))
+                if result.category_counts[requested_category] == 0:
+                    return result
+                _retry(lambda: _open_category(page, requested_category))
+                _collect_documents(page, result, output_dir, max_documents)
                 return result
-            page.get_by_role(
-                "button",
-                name=re.compile(
-                    TAB_PATTERN.format(re.escape(requested_category))
-                ),
-            ).click()
-            rows = page.locator("tr.v-grid-row[role='row']").filter(
-                has=page.get_by_role("button", name="GO GET IT")
-            )
-            rows.first.wait_for(state="visible", timeout=30000)
-            seen = set()
-            stagnant_scrolls = 0
-            while len(result.successful_documents) < max_documents:
-                visible = _visible_documents(page, len(seen) + 1)
-                fresh = [document for document in visible if document.source_id not in seen]
-                for document in fresh:
-                    seen.add(document.source_id)
-                    result.documents.append(document)
-                    if document.security.lower() != "public":
-                        document.status = "skipped"
-                        document.error = "Security label: " + document.security
-                        continue
-                    try:
-                        _download_row(page, document, output_dir)
-                        saved_bytes = sum(
-                            Path(path).stat().st_size
-                            for path in result.saved_files
-                        )
-                        if saved_bytes > MAX_SAVED_BYTES:
-                            for path in document.saved_paths:
-                                Path(path).unlink(missing_ok=True)
-                            document.saved_paths.clear()
-                            document.filenames.clear()
-                            document.status = "skipped"
-                            document.error = "Attachment size budget exceeded"
-                    except Exception as error:
-                        document.status = "failed"
-                        document.error = str(error)
-                    if len(result.successful_documents) >= max_documents:
-                        break
-                if len(result.successful_documents) >= max_documents:
-                    break
-                if len(seen) >= result.category_counts[requested_category]:
-                    break
-                if not fresh:
-                    stagnant_scrolls += 1
-                    if stagnant_scrolls >= 3:
-                        break
-                else:
-                    stagnant_scrolls = 0
-                mounted = page.locator("tr.v-grid-row[role='row']")
-                if mounted.count() == 0:
-                    break
-                mounted.last.hover()
-                page.mouse.wheel(0, 650)
-                page.wait_for_timeout(350)
-            return result
+            except Exception as error:
+                _capture_failure(page, output_dir, "scrape", error)
+                raise
         finally:
-            context.close()
-            browser.close()
+            try:
+                if context is not None:
+                    context.close()
+            finally:
+                browser.close()

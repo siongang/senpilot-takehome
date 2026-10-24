@@ -8,15 +8,10 @@ from pathlib import Path
 from senpilot_agent.jobs.store import JobStore
 from senpilot_agent.models import MatterResult
 from senpilot_agent.output.archive import create_zip
-from senpilot_agent.requests.parser import parse_request
+from senpilot_agent.requests.parser import ParsedRequest
 
 
 class CoreTests(unittest.TestCase):
-    def test_request_parser_rejects_conflicting_categories(self):
-        parsed = parse_request("M12205", "Send Exhibits and Transcripts")
-        self.assertFalse(parsed.valid)
-        self.assertIsNone(parsed.document_type)
-
     def test_message_id_is_deduplicated(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JobStore(Path(directory) / "jobs.sqlite3")
@@ -28,7 +23,7 @@ class CoreTests(unittest.TestCase):
                     "subject": "M12205 Key Documents",
                     "text": "Send Key Documents from M12205",
                 }
-                parsed = parse_request(message["subject"], message["text"])
+                parsed = ParsedRequest("M12205", "Key Documents")
                 self.assertTrue(store.enqueue(message, parsed))
                 self.assertFalse(store.enqueue(message, parsed))
                 self.assertTrue(store.has_message("agent@example.com", "message-1"))

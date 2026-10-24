@@ -48,6 +48,8 @@ class AgentMailClient:
         if data is not None:
             headers["Content-Type"] = "application/json"
         if idempotency_key:
+            # Documented for send/reply; identical-payload retries are safe for 24h.
+            # Worker persists text/ZIP and refuses automatic retries after 23h.
             headers["Idempotency-Key"] = idempotency_key
         request = Request(url, data=data, headers=headers, method=method)
         try:

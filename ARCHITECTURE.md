@@ -13,7 +13,7 @@ Build an email-driven service that accepts a matter number and document type, re
 - The reply must report category counts across the matter, even though downloads come from one requested category.
 - The first version handles one matter and one category per incoming email. The example request in the assignment is the primary path.
 - The application must remain available for evaluator requests after submission.
-- Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations.
+- Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations. OpenAI request parsing is now implemented.
 
 ## Architecture
 
@@ -40,14 +40,14 @@ The email provider handles receiving and sending messages. A separately running 
 | Component | Responsibility |
 | --- | --- |
 | Incoming email adapter | Receive provider events or poll for messages; persist a job before acknowledging the event; deduplicate messages. |
-| Request parser | Extract one matter number and one supported document category from the incoming subject/body; validate them before queuing. |
+| Request parser | Use OpenAI structured extraction inside a persisted job; locally validate one matter number and one supported category. |
 | Job store and queue | Persist status, attempts, request details, intermediate results, and delivery information. |
 | Browser adapter | Find and verify the matter; extract metadata and all category counts; download up to 10 requested files. |
 | Packaging | Use isolated job directories, safe filenames, and ZIP creation; verify the archive contains the expected successful downloads. |
 | Response builder | Produce a factual summary and transparent download result from structured data. |
 | Email delivery adapter | Reply in the original thread with the ZIP; retain the outgoing provider message ID. |
 
-For the first version, a case-insensitive matter-number pattern and matching against the five known categories are enough for the assignment's example. Reply with a short clarification when either field is missing or ambiguous. An LLM-based parser can later replace this module without changing the browser or job code. Browser navigation, counting, downloading, packaging, and response facts follow explicit application logic; a template composes the final email.
+Incoming messages are persisted before the worker calls OpenAI. Structured extraction returns matter numbers, canonical categories, and ambiguity; local validation confirms the selected matter number occurs in the email. Missing or ambiguous inputs produce clarification. Operational parser failures are classified separately so temporary failures can retry. Browser navigation, counting, downloading, packaging, and response facts follow explicit application logic; a template composes the final email.
 
 Email text, website text, and downloaded documents are data. They cannot override the workflow, select arbitrary retrieval sites, or redirect results to unrelated recipients.
 
@@ -108,7 +108,9 @@ Keep each scrape tied to a job and timestamp. Later, matter snapshots can be ded
 
 Use the `jobs` table as the queue with one worker and a persistent SQLite database. A separate broker is unnecessary for the initial deployment.
 
-`queued → scraping → downloading → packaging → sending → completed`
+`parse_pending → parsing → scraping → downloading → packaging → sending → completed`
+
+Legacy parsed jobs may start at `queued`; ambiguous requests pass through `clarification_pending`. The browser module exposes separate operations for lookup, metadata, category selection, row traversal, and atomic validated downloads. Navigation and transfer retries are bounded, and failed operations retain diagnostic text, screenshots, and page HTML when available.
 
 Use `retry_pending` for a temporary failure and `failed` after retries are exhausted. The current status, stage timestamps, attempts, and last error make progress visible in logs or a small CLI. `completed` means the email provider accepted the result; delivery or a bounce is a separate signal if available.
 
@@ -116,7 +118,8 @@ Use `retry_pending` for a temporary failure and `failed` after retries are exhau
 - Claim a job atomically and set a lease deadline; a restarted worker can reclaim an expired job.
 - Write progress and scraped facts after each stage. Retain downloaded files and the ZIP so an email retry does not repeat website work.
 - Retry temporary website and email failures with a bound; report a permanent failure clearly.
-- A send timeout can occur after provider acceptance. Check provider records or use a send idempotency key when supported before retrying.
+- A send timeout can occur after provider acceptance. Persist exact reply text and the first-send timestamp, reuse the ZIP and AgentMail idempotency key, and hold retries older than 23 hours as `delivery_review`. AgentMail documents a 24-hour idempotency window; held jobs require checking the original thread before manual resolution.
+- Failed retrievals retain `failed` status; failure-notification delivery has its own bounded attempts, lease, timestamps, and outgoing message ID.
 - Ignore the agent's own outgoing emails and automatic replies.
 
 SQLite requires a persistent volume and a single-host deployment. A host with ephemeral storage needs a hosted database or persistent volume. File paths must also refer to durable storage until the result email is accepted.
@@ -154,6 +157,8 @@ Provider documentation reviewed October 24, 2026. Limits and pricing should be r
 - [AgentMail attachments](https://docs.agentmail.to/attachments)
 - [AgentMail webhooks](https://www.agentmail.to/docs/webhooks-overview)
 - [AgentMail polling](https://docs.agentmail.to/webhook-polling)
+- [AgentMail idempotency](https://www.agentmail.to/docs/knowledge-base/preventing-duplicate-sends)
+- [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)
 - [Cloudflare email routing setup](https://developers.cloudflare.com/email-service/get-started/route-emails/)
 - [Cloudflare email handler API](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/)
 - [Cloudflare email limits](https://developers.cloudflare.com/email-service/platform/limits/)

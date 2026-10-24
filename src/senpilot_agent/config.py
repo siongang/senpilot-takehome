@@ -26,10 +26,18 @@ class Settings:
     agentmail_base_url: str
     poll_seconds: int
     poll_after: str
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_timeout_seconds: float = 20.0
+    openai_max_retries: int = 2
 
     @property
     def database_path(self) -> Path:
         return self.runtime_dir / "jobs.sqlite3"
+
+    def require_openai(self) -> None:
+        if not self.openai_api_key:
+            raise ValueError("Missing parser configuration: OPENAI_API_KEY")
 
     def require_email(self) -> None:
         missing = []
@@ -50,6 +58,15 @@ def load_settings() -> Settings:
     poll_seconds = int(os.getenv("AGENTMAIL_POLL_SECONDS", "15"))
     if poll_seconds < 5:
         raise ValueError("AGENTMAIL_POLL_SECONDS must be at least 5")
+    openai_timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
+    if not 1 <= openai_timeout <= 60:
+        raise ValueError("OPENAI_TIMEOUT_SECONDS must be between 1 and 60")
+    openai_retries = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+    if not 0 <= openai_retries <= 3:
+        raise ValueError("OPENAI_MAX_RETRIES must be between 0 and 3")
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+    if not openai_model:
+        raise ValueError("OPENAI_MODEL must not be empty")
     return Settings(
         runtime_dir=runtime_dir,
         headless=_boolean("SENPILOT_HEADLESS", True),
@@ -61,4 +78,8 @@ def load_settings() -> Settings:
         ).rstrip("/"),
         poll_seconds=poll_seconds,
         poll_after=os.getenv("AGENTMAIL_POLL_AFTER", ""),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        openai_model=openai_model,
+        openai_timeout_seconds=openai_timeout,
+        openai_max_retries=openai_retries,
     )

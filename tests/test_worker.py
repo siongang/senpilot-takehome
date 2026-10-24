@@ -1,0 +1,212 @@
+"""Worker integration checks using real SQLite and mocked network boundaries."""
+
+import threading
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from senpilot_agent.config import Settings
+from senpilot_agent.models import CATEGORIES, Document, MatterResult
+from senpilot_agent.output.response import format_empty, format_result
+from senpilot_agent.requests.parser import ParsedRequest, RequestParsingError
+from senpilot_agent.worker import Worker
+
+
+PAST = "2000-01-01T00:00:00+00:00"
+
+
+class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        log_patch = patch("senpilot_agent.worker.LOG")
+        log_patch.start()
+        self.addCleanup(log_patch.stop)
+        self.directory = tempfile.TemporaryDirectory()
+        self.settings = Settings(Path(self.directory.name), True, 10, "test", "agent@example.com", "https://example.com", 5, "")
+        self.worker = Worker(self.settings)
+        self.worker.mail = Mock()
+        self.worker.mail.reply.return_value = {"message_id": "outgoing"}
+        self.message = {"inbox_id": "agent@example.com", "message_id": "incoming", "from": "person@example.com", "subject": "M12205 exhibits", "text": "Please send exhibits"}
+        self.parse = patch("senpilot_agent.worker.parse_request", return_value=ParsedRequest("M12205", "Exhibits"))
+        self.parser = self.parse.start()
+        self.scrape = patch("senpilot_agent.worker.scrape_matter", side_effect=self.result)
+        self.scraper = self.scrape.start()
+
+    def tearDown(self):
+        self.scrape.stop()
+        self.parse.stop()
+        self.worker.close()
+        self.directory.cleanup()
+
+    def result(self, matter, category, downloads, **kwargs):
+        downloads.mkdir(parents=True, exist_ok=True)
+        path = downloads / "document.pdf"
+        path.write_bytes(b"test-pdf")
+        return MatterResult(matter, category, "Example", "Closed", "Water", "Capital", "Today", "Decision", "Today", "Done", {name: int(name == category) for name in CATEGORIES}, [Document("1", "Test", "Today", "Public", "pdf", 1, status="downloaded", saved_paths=[str(path)], filenames=[path.name])])
+
+    def enqueue(self):
+        self.worker.store.enqueue_unparsed(self.message)
+
+    def saved(self, job_id):
+        return self.worker.store.get(job_id)
+
+    def due(self, job_id):
+        self.worker.store.update(job_id, next_attempt_at=PAST)
+
+    def test_success_persists_parse_and_delivery(self):
+        self.enqueue()
+        job_id = self.worker.process_next()
+        job = self.saved(job_id)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["matter_number"], "M12205")
+        self.assertEqual(job["outgoing_message_id"], "outgoing")
+        self.assertTrue(Path(job["zip_path"]).is_file())
+        self.assertIn("I attached 1", job["reply_text"])
+        self.assertIsNone(self.worker.process_next())
+
+    def test_clarification_does_not_scrape(self):
+        self.parser.return_value = ParsedRequest(None, None, "Please specify a matter")
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "completed")
+        self.scraper.assert_not_called()
+        self.assertIn("Please specify", self.worker.mail.reply.call_args.args[1])
+
+    def test_transient_parser_failure_remains_durable(self):
+        self.parser.side_effect = RequestParsingError("Temporary API failure")
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "retry_pending")
+        self.assertIsNone(job["parse_error"])
+        self.worker.mail.reply.assert_not_called()
+        self.parser.side_effect = None
+        self.due(job["id"])
+        self.assertEqual(self.saved(self.worker.process_next())["status"], "completed")
+
+    def test_nonretryable_parser_failure_is_terminal(self):
+        self.parser.side_effect = RequestParsingError("Invalid configuration", retryable=False)
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["attempts"], 1)
+        self.scraper.assert_not_called()
+
+    def test_scrape_failure_exhausts_and_notifies_separately(self):
+        self.scraper.side_effect = RuntimeError("Navigation failed")
+        self.enqueue()
+        for _ in range(3):
+            job_id = self.worker.process_next()
+            self.due(job_id)
+        self.assertEqual(self.saved(job_id)["status"], "failed")
+        self.assertIsNone(self.worker.process_next())
+        self.assertEqual(self.worker.process_failure_notification(), job_id)
+        job = self.saved(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIsNone(job["outgoing_message_id"])
+        self.assertEqual(job["failure_notification_message_id"], "outgoing")
+        self.assertEqual(self.worker.mail.reply.call_args.kwargs["idempotency_key"], job_id + "-failure")
+
+    def test_send_retry_reuses_exact_zip_and_text(self):
+        self.worker.mail.reply.side_effect = [TimeoutError("uncertain send"), {"message_id": "accepted"}]
+        self.enqueue()
+        job_id = self.worker.process_next()
+        first = self.saved(job_id)
+        zip_bytes = Path(first["zip_path"]).read_bytes()
+        self.due(job_id)
+        self.worker.process_next()
+        job = self.saved(job_id)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.scraper.call_count, 1)
+        self.assertEqual(Path(job["zip_path"]).read_bytes(), zip_bytes)
+        self.assertEqual(self.worker.mail.reply.call_args_list[0], self.worker.mail.reply.call_args_list[1])
+
+    def test_expired_send_is_held_without_resending_or_failure_notice(self):
+        self.worker.mail.reply.side_effect = TimeoutError("uncertain send")
+        self.enqueue()
+        job_id = self.worker.process_next()
+        self.worker.store.update(job_id, send_started_at=PAST)
+        self.due(job_id)
+        self.worker.process_next()
+        self.assertEqual(self.saved(job_id)["status"], "delivery_review")
+        self.assertEqual(self.worker.mail.reply.call_count, 1)
+        self.assertIsNone(self.worker.process_failure_notification())
+
+    def test_fenced_update_prevents_send(self):
+        self.enqueue()
+        with patch.object(self.worker.store, "update_claimed", return_value=False):
+            self.worker.process_next()
+        self.worker.mail.reply.assert_not_called()
+
+    def test_all_downloads_failed_retries_instead_of_empty_success(self):
+        result = self.result("M12205", "Exhibits", self.settings.runtime_dir / "download")
+        result.documents[0].status = "failed"
+        self.scraper.side_effect = None
+        self.scraper.return_value = result
+        self.enqueue()
+        job = self.saved(self.worker.process_next())
+        self.assertEqual(job["status"], "retry_pending")
+        self.assertIsNone(job["result_json"])
+        self.worker.mail.reply.assert_not_called()
+
+    def test_intake_isolates_bad_messages_and_does_not_parse(self):
+        self.worker.mail.list_recent.return_value = [{"message_id": "broken"}, self.message, {"message_id": "auto"}, {"message_id": "own", "from": "agent@example.com"}]
+        self.worker.mail.get_message.side_effect = [RuntimeError("bad message"), self.message, {"message_id": "auto", "headers": {"Auto-Submitted": "auto-replied"}}]
+        self.assertEqual(self.worker.ingest_recent(), 1)
+        self.parser.assert_not_called()
+        self.assertTrue(self.worker.store.has_message("agent@example.com", "incoming"))
+
+    def test_heartbeat_renews_using_a_separate_connection(self):
+        self.enqueue()
+        job = self.worker.store.claim_next()
+        renewed = threading.Event()
+        from senpilot_agent.jobs.store import JobStore
+        original = JobStore.renew_lease
+
+        def record(store, *args):
+            self.assertIsNot(store.connection, self.worker.store.connection)
+            success = original(store, *args)
+            renewed.set()
+            return success
+
+        with patch("senpilot_agent.worker.HEARTBEAT_SECONDS", 0.005), patch.object(JobStore, "renew_lease", record):
+            with self.worker._heartbeat(job) as lost:
+                self.assertTrue(renewed.wait(timeout=5))
+                self.assertFalse(lost.is_set())
+
+    def test_failure_notification_retry_is_independent(self):
+        self.parser.side_effect = RequestParsingError("Invalid configuration", retryable=False)
+        self.enqueue()
+        job_id = self.worker.process_next()
+        self.worker.mail.reply.side_effect = [TimeoutError("mail unavailable"), {"message_id": "failure-delivered"}]
+        self.worker.process_failure_notification()
+        self.assertEqual(self.saved(job_id)["failure_notification_status"], "pending")
+        self.worker.store.connection.execute("UPDATE jobs SET failure_notification_next_at=?", (PAST,))
+        self.worker.store.connection.commit()
+        self.worker.process_failure_notification()
+        job = self.saved(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["failure_notification_message_id"], "failure-delivered")
+        self.assertEqual(self.worker.mail.reply.call_args_list[0], self.worker.mail.reply.call_args_list[1])
+
+    def test_expired_failure_notification_is_exhausted_without_send(self):
+        self.parser.side_effect = RequestParsingError("Invalid configuration", retryable=False)
+        self.enqueue()
+        job_id = self.worker.process_next()
+        self.worker.store.connection.execute("UPDATE jobs SET failure_notification_started_at=?", (PAST,))
+        self.worker.store.connection.commit()
+        self.worker.process_failure_notification()
+        self.assertEqual(self.saved(job_id)["failure_notification_status"], "exhausted")
+        self.worker.mail.reply.assert_not_called()
+
+    def test_zero_count_differs_from_unavailable_files_and_partial_response(self):
+        result = self.result("M12205", "Exhibits", self.settings.runtime_dir / "download")
+        result.documents = []
+        self.assertIn("No files could be attached", format_empty(result))
+        result.category_counts["Exhibits"] = 0
+        self.assertIn("lists no Exhibits", format_empty(result))
+        result.documents = [Document("2", "Failed", "Today", "Public", "pdf", 2, status="failed")]
+        self.assertIn("could not be downloaded", format_result(result, 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

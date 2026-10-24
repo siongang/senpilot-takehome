@@ -22,10 +22,9 @@ def format_result(result: MatterResult, attached_count: int) -> str:
         "The matter shows {} category listings across five tabs: {}.".format(
             result.listing_total, counts
         ),
-        "I attached {} of the {} {} as a ZIP.".format(
-            attached_count,
+        "I attached {} files from {} downloaded {} listings as a ZIP ({} listings in this category).".format(
+            attached_count, len(result.successful_documents), result.requested_category,
             result.category_counts[result.requested_category],
-            result.requested_category,
         ),
     ]
     failed = [item for item in result.documents if item.status == "failed"]
@@ -51,11 +50,22 @@ def format_result(result: MatterResult, attached_count: int) -> str:
 def format_empty(result: MatterResult) -> str:
     body = format_result(result, 0)
     return body.replace(
-        "I attached 0 of the {} {} as a ZIP.".format(
+        "I attached 0 files from {} downloaded {} listings as a ZIP ({} listings in this category).".format(
+            len(result.successful_documents), result.requested_category,
             result.category_counts[result.requested_category],
-            result.requested_category,
         ),
-        "No {} were available to attach. The ZIP is empty.".format(
-            result.requested_category
-        ),
+        ("This matter lists no {}. The ZIP is empty.".format(result.requested_category)
+         if result.category_counts[result.requested_category] == 0
+         else "No files could be attached from the selected {} listings. The ZIP is empty.".format(result.requested_category)),
     )
+
+
+def format_failure(job: dict) -> str:
+    """Explain a terminal outcome without leaking exception or credential details."""
+    if job.get("send_started_at"):
+        explanation = ("I could not confirm delivery of the response to your request. "
+                       "It may already have arrived; please check this thread before resubmitting.")
+    else:
+        explanation = ("I could not complete your document request after processing stopped. "
+                       "Please try again later or contact the agent operator with the reference below.")
+    return "Hi,\n\n{}\n\nRequest reference: {}\n\nBest,\nRegulatory Agent".format(explanation, job["id"])
