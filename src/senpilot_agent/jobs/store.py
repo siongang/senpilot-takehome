@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -58,16 +59,20 @@ class JobStore:
                 last_error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE(inbox_id, message_id)
+                request_index INTEGER NOT NULL DEFAULT 0,
+                parent_job_id TEXT,
+                UNIQUE(inbox_id, message_id, request_index)
             )
             """
         )
-        # Additive migration preserves existing databases. Serialize schema checks
+        # Migrate existing databases transactionally. Serialize schema checks
         # so concurrent worker starts cannot both try to add the same column.
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(jobs)")}
             for name, definition in {
+                "request_index": "INTEGER NOT NULL DEFAULT 0",
+                "parent_job_id": "TEXT",
                 "message_loaded": "INTEGER NOT NULL DEFAULT 1",
                 "send_started_at": "TEXT",
                 "reply_text": "TEXT",
@@ -81,6 +86,28 @@ class JobStore:
             }.items():
                 if name not in columns:
                     self.connection.execute("ALTER TABLE jobs ADD COLUMN {} {}".format(name, definition))
+            # SQLite cannot drop a table-level UNIQUE constraint. Rebuild inside
+            # this same transaction, retaining every column and existing row.
+            schema = self.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'"
+            ).fetchone()[0]
+            migrated, changed = re.subn(
+                r"UNIQUE\s*\(\s*inbox_id\s*,\s*message_id\s*\)",
+                "UNIQUE(inbox_id, message_id, request_index)", schema, flags=re.I,
+            )
+            if changed:
+                indexes = [row[0] for row in self.connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='jobs' AND sql IS NOT NULL"
+                )]
+                self.connection.execute(migrated.replace("CREATE TABLE jobs", "CREATE TABLE jobs_multi", 1))
+                self.connection.execute("INSERT INTO jobs_multi SELECT * FROM jobs")
+                self.connection.execute("DROP TABLE jobs")
+                self.connection.execute("ALTER TABLE jobs_multi RENAME TO jobs")
+                for sql in indexes:
+                    self.connection.execute(sql)
+            self.connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS jobs_message_request ON jobs(inbox_id, message_id, request_index)"
+            )
             self.connection.execute("CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status, next_attempt_at)")
             self.connection.commit()
         except Exception:
@@ -109,6 +136,7 @@ class JobStore:
 
     def enqueue(self, message: dict, parsed: Optional[ParsedRequest], *, needs_fetch: bool = False) -> bool:
         now = utc_now()
+        job_id = str(uuid.uuid4())
         cursor = self.connection.execute(
             """
             INSERT OR IGNORE INTO jobs (
@@ -118,17 +146,24 @@ class JobStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()), message["inbox_id"], message["message_id"], message.get("thread_id"),
+                job_id, message["inbox_id"], message["message_id"], message.get("thread_id"),
                 message.get("from", ""), message.get("subject") or "",
                 message_text(message),
-                parsed.matter_number if parsed else None,
+                (parsed.matters[0] if parsed.matters else parsed.matter_number) if parsed else None,
                 parsed.document_type if parsed else None,
                 parsed.error if parsed else None,
                 ("queued" if parsed.valid else "clarification_pending") if parsed else "parse_pending",
                 now, now, 0 if needs_fetch else 1,
             ),
         )
-        self.connection.commit()
+        try:
+            if cursor.rowcount == 1 and parsed and parsed.valid:
+                self._insert_matter_jobs(self.get(job_id), job_id,
+                                         tuple(dict.fromkeys(parsed.matters)), parsed.document_type, now)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
         return cursor.rowcount == 1
 
     def claim_next(self, max_attempts: int = 3, lease_seconds: int = 1200) -> Optional[dict]:
@@ -183,11 +218,46 @@ class JobStore:
 
     def save_parse_result(self, job_id: str, attempts: int, parsed: ParsedRequest) -> bool:
         """Persist extraction and keep the same live claim for retrieval or clarification."""
-        return self.update_claimed(
-            job_id, attempts, matter_number=parsed.matter_number,
-            requested_category=parsed.document_type, parse_error=parsed.error,
-            status="scraping" if parsed.valid else "clarification_pending",
-        )
+        # Fan out atomically with the first job's parse result. A crash can
+        # leave either all matter jobs or none, never a partially expanded email.
+        now = utc_now()
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT * FROM jobs WHERE id=? AND attempts=? AND lease_until > ? AND status='parsing'",
+                (job_id, attempts, now),
+            ).fetchone()
+            if row is None:
+                self.connection.rollback()
+                return False
+            matters = tuple(dict.fromkeys(parsed.matters)) if parsed.valid else ()
+            first = matters[0] if matters else parsed.matter_number
+            self.connection.execute(
+                """UPDATE jobs SET matter_number=?, requested_category=?, parse_error=?,
+                    status=?, updated_at=? WHERE id=?""",
+                (first, parsed.document_type, parsed.error,
+                 "scraping" if parsed.valid else "clarification_pending", now, job_id),
+            )
+            self._insert_matter_jobs(row, job_id, matters, parsed.document_type, now)
+            self.connection.commit()
+            return True
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def _insert_matter_jobs(self, row, job_id, matters, category, now) -> None:
+        """Insert siblings inside the caller's transaction, never commit here."""
+        for index, matter in enumerate(matters[1:], start=1):
+            self.connection.execute(
+                """INSERT INTO jobs (
+                    id, inbox_id, message_id, thread_id, sender, subject, body,
+                    matter_number, requested_category, status, created_at, updated_at,
+                    message_loaded, request_index, parent_job_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?)""",
+                (str(uuid.uuid4()), row["inbox_id"], row["message_id"], row["thread_id"],
+                 row["sender"], row["subject"], row["body"], matter, category,
+                 now, now, index, job_id),
+            )
 
     def _update(self, job_id: str, fields: dict, attempts: Optional[int] = None) -> bool:
         invalid = set(fields) - UPDATABLE

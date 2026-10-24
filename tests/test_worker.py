@@ -64,6 +64,59 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("I attached 1", job["reply_text"])
         self.assertIsNone(self.worker.process_next())
 
+    def multiple(self):
+        self.message['subject'] = 'M12205 and M12345 exhibits'
+        self.parser.return_value = ParsedRequest('M12205', 'Exhibits', matter_numbers=('M12205', 'M12345'))
+        self.enqueue()
+
+    def test_multiple_matters_send_distinct_zips_and_replies(self):
+        import zipfile
+        self.multiple()
+        first = self.saved(self.worker.process_next())
+        second = self.saved(self.worker.process_next())
+        self.assertEqual([first['matter_number'], second['matter_number']], ['M12205', 'M12345'])
+        self.assertEqual([first['status'], second['status']], ['completed', 'completed'])
+        self.assertEqual(second['parent_job_id'], first['id'])
+        self.assertNotEqual(first['zip_path'], second['zip_path'])
+        for job in (first, second):
+            with zipfile.ZipFile(job['zip_path']) as archive:
+                self.assertEqual(len(archive.namelist()), 1)
+            self.assertIn(job['matter_number'], job['reply_text'])
+        calls = self.worker.mail.reply.call_args_list
+        self.assertEqual([call.args[0] for call in calls], ['incoming', 'incoming'])
+        self.assertNotEqual(calls[0].kwargs['idempotency_key'], calls[1].kwargs['idempotency_key'])
+        self.parser.assert_called_once()
+        self.assertFalse(self.worker.store.enqueue_unparsed(self.message))
+        self.assertIsNone(self.worker.process_next())
+
+    def test_first_matter_failure_does_not_block_second(self):
+        self.multiple()
+        self.scraper.side_effect = lambda matter, *args, **kwargs: (self.result(matter, *args, **kwargs)
+            if matter == 'M12345' else (_ for _ in ()).throw(RuntimeError('Unavailable')))
+        first = self.saved(self.worker.process_next())
+        self.assertEqual(first['status'], 'retry_pending')
+        second = self.saved(self.worker.process_next())
+        self.assertEqual(second['status'], 'completed')
+        self.assertEqual(second['matter_number'], 'M12345')
+        self.scraper.side_effect = self.result
+        self.due(first['id'])
+        self.worker.process_next()
+        self.assertEqual(self.worker.mail.reply.call_count, 2)
+        self.parser.assert_called_once()
+
+    def test_second_matter_send_retry_does_not_resend_first(self):
+        self.multiple()
+        self.worker.mail.reply.side_effect = [{'message_id': 'first'}, TimeoutError('uncertain'), {'message_id': 'second'}]
+        first = self.saved(self.worker.process_next())
+        second = self.saved(self.worker.process_next())
+        self.due(second['id'])
+        self.worker.process_next()
+        self.assertEqual(self.saved(first['id'])['outgoing_message_id'], 'first')
+        self.assertEqual(self.saved(second['id'])['outgoing_message_id'], 'second')
+        calls = self.worker.mail.reply.call_args_list
+        self.assertEqual(calls[1], calls[2])
+        self.assertEqual(self.scraper.call_count, 2)
+
     def test_clarification_does_not_scrape(self):
         self.parser.return_value = ParsedRequest(None, None, "Please specify a matter")
         self.enqueue()

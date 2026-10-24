@@ -1,4 +1,4 @@
-"""OpenAI extraction with local validation for one matter and document type."""
+"""OpenAI extraction with local validation for multiple matters and one document type."""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ class ParsedRequest:
     matter_number: Optional[str]
     document_type: Optional[str]
     error: Optional[str] = None
+    matter_numbers: tuple[str, ...] = ()
+
+    @property
+    def matters(self) -> tuple[str, ...]:
+        return self.matter_numbers or ((self.matter_number,) if self.matter_number else ())
 
     @property
     def valid(self) -> bool:
@@ -66,24 +71,33 @@ Do not infer a document type from a generic request for documents or files.
 If a field is missing, return an empty list for it. If multiple values are requested,
 return all of them. Set ambiguous=true when the user's intended selection is unclear,
 including 'all documents', alternatives without a selection, or unclear corrections.
-A clear request must select exactly one matter and one category. Do not guess.
+A clear request selects one or more matter numbers and exactly one shared category.
+Multiple matters are supported: apply the single requested category to every matter.
+If different categories are assigned to different matters, return all categories; do not
+collapse them into a shared category.
+Use ambiguous=true for alternatives: 'M12205 or M12345' is not a request for both.
+Examples:
+- 'Key Documents for M12205 and M12345' => both matters, Key Documents, ambiguous=false.
+- 'Key Documents for M12205 or M12345?' => both matters, Key Documents, ambiguous=true.
+- 'M12205 exhibits; M12345 transcripts' => both matters, both categories (requires clarification).
+Do not guess.
 """
 
 
 def _clarification(matters: list[str], categories: list[str], ambiguous: bool) -> ParsedRequest:
-    matter = matters[0] if len(matters) == 1 else None
+    matter = matters[0] if matters else None
     category = categories[0] if len(categories) == 1 else None
-    if ambiguous or (len(matters) != 1 and len(categories) != 1):
+    if ambiguous or (not matters and category is None):
         return ParsedRequest(
             matter, category,
-            "Please specify one matter number (M plus five digits) and one document type: "
+            "Please specify one or more matter numbers (M plus five digits) and one shared document type: "
             + ", ".join(CATEGORIES) + ".",
         )
     if matter is None:
-        return ParsedRequest(None, category, "Please specify exactly one matter number in the form M12345.")
+        return ParsedRequest(None, category, "Please specify at least one matter number in the form M12345.")
     if category is None:
-        return ParsedRequest(matter, None, "Please specify exactly one document type: " + ", ".join(CATEGORIES) + ".")
-    return ParsedRequest(matter, category)
+        return ParsedRequest(matter, None, "Please specify exactly one document type to apply to all listed matters: " + ", ".join(CATEGORIES) + ".")
+    return ParsedRequest(matter, category, matter_numbers=tuple(matters))
 
 
 def parse_request(subject: str, body: str) -> ParsedRequest:
@@ -94,7 +108,7 @@ def parse_request(subject: str, body: str) -> ParsedRequest:
     """
     subject, body = subject or "", body or ""
     if len(subject) + len(body) > MAX_EMAIL_CHARACTERS:
-        return ParsedRequest(None, None, "Please send a shorter request containing one matter number and one document type.")
+        return ParsedRequest(None, None, "Please send a shorter request containing matter numbers and one shared document type.")
     try:
         settings = load_settings()
         settings.require_openai()

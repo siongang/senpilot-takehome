@@ -143,6 +143,72 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(saved["attempts"], 2)
         self.assertIsNone(self.store.claim_next())
 
+    def batch(self):
+        return ParsedRequest('M12205', 'Exhibits', matter_numbers=('M12205', 'M12345', 'M12205'))
+
+    def test_direct_parsed_enqueue_fans_out_only_once(self):
+        self.assertTrue(self.store.enqueue(self.message, self.batch()))
+        self.assertFalse(self.store.enqueue(self.message, self.batch()))
+        self.assertEqual(len(self.store.recent()), 2)
+
+    def test_atomic_fanout_survives_reopen_and_stale_parse(self):
+        self.store.enqueue_unparsed(self.message)
+        job = self.store.claim_next()
+        self.assertTrue(self.store.save_parse_result(job['id'], job['attempts'], self.batch()))
+        self.assertFalse(self.store.save_parse_result(job['id'], job['attempts'], self.batch()))
+        self.assertFalse(self.store.enqueue_unparsed(self.message))
+        self.store.close()
+        self.store = JobStore(self.path)
+        rows = list(self.store.connection.execute('SELECT * FROM jobs ORDER BY request_index'))
+        self.assertEqual([r['matter_number'] for r in rows], ['M12205', 'M12345'])
+        self.assertEqual(rows[1]['parent_job_id'], job['id'])
+        self.assertEqual(self.store.claim_next()['matter_number'], 'M12345')
+
+    def test_expired_parse_cannot_expand(self):
+        self.store.enqueue_unparsed(self.message)
+        job = self.store.claim_next()
+        self.expire(job)
+        self.assertFalse(self.store.save_parse_result(job['id'], job['attempts'], self.batch()))
+        self.assertEqual(len(self.store.recent()), 1)
+
+    def test_fanout_insert_failure_rolls_back_parent_and_children(self):
+        self.store.enqueue_unparsed(self.message)
+        job = self.store.claim_next()
+        self.store.connection.execute("""CREATE TRIGGER fail_child BEFORE INSERT ON jobs
+            WHEN NEW.request_index > 0 BEGIN SELECT RAISE(ABORT, 'simulated disk failure'); END""")
+        self.store.connection.commit()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.save_parse_result(job['id'], job['attempts'], self.batch())
+        self.assertEqual(self.store.get(job['id'])['status'], 'parsing')
+        self.assertIsNone(self.store.get(job['id'])['matter_number'])
+        self.assertEqual(len(self.store.recent()), 1)
+
+    def test_real_single_message_unique_constraint_migrates_without_data_loss(self):
+        legacy = Path(self.directory.name) / 'unique-legacy.sqlite3'
+        connection = sqlite3.connect(legacy)
+        schema = self.store.connection.execute("SELECT sql FROM sqlite_master WHERE name='jobs'").fetchone()[0]
+        schema = schema.replace('UNIQUE(inbox_id, message_id, request_index)', 'UNIQUE(inbox_id, message_id)')
+        connection.execute(schema)
+        self.enqueue()
+        row = self.store.connection.execute('SELECT * FROM jobs').fetchone()
+        connection.execute('INSERT INTO jobs VALUES ({})'.format(','.join('?' for _ in row)), tuple(row))
+        connection.execute('CREATE INDEX jobs_due ON jobs(status, next_attempt_at)')
+        connection.commit()
+        connection.close()
+        for _ in range(2):
+            store = JobStore(legacy)
+            try:
+                self.assertEqual(store.get(row['id'])['body'], self.message['text'])
+                self.assertFalse(store.enqueue(self.message, self.parsed))
+                if _ == 0:
+                    store.update(row['id'], matter_number=None, requested_category=None, status='parse_pending')
+                    job = store.claim_next()
+                    self.assertTrue(store.save_parse_result(job['id'], job['attempts'], self.batch()))
+                self.assertEqual(len(store.recent()), 2)
+                self.assertEqual(store.connection.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+            finally:
+                store.close()
+
     def test_failure_delivery_separate_from_retrieval_and_reopen(self):
         self.enqueue()
         job = self.store.claim_next()

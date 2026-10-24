@@ -68,4 +68,9 @@ def format_failure(job: dict) -> str:
     else:
         explanation = ("I could not complete your document request after processing stopped. "
                        "Please try again later or contact the agent operator with the reference below.")
-    return "Hi,\n\n{}\n\nRequest reference: {}\n\nBest,\nRegulatory Agent".format(explanation, job["id"])
+    selection = ""
+    if job.get("matter_number"):
+        selection = "Matter: {}. Document type: {}.\n\n".format(
+            job["matter_number"], job.get("requested_category") or "unspecified",
+        )
+    return "Hi,\n\n{}{}\n\nRequest reference: {}\n\nBest,\nRegulatory Agent".format(selection, explanation, job["id"])

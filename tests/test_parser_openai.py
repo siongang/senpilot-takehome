@@ -58,11 +58,12 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(parsed.document_type)
         self.assertEqual(parsed.matter_number, 'M12205')
 
-    def test_multiple_matters_require_clarification(self):
+    def test_multiple_matters_share_one_category(self):
         self.response(['M12205', 'M12345'], ['Exhibits'])
         parsed = parse_request('M12205 and M12345', 'Send Exhibits')
-        self.assertFalse(parsed.valid)
-        self.assertIsNone(parsed.matter_number)
+        self.assertTrue(parsed.valid)
+        self.assertEqual(parsed.matters, ('M12205', 'M12345'))
+        self.assertEqual(parsed.document_type, 'Exhibits')
 
     def test_missing_fields_and_explicit_ambiguity(self):
         for matters, categories, ambiguous in [([], ['Exhibits'], False), (['M12205'], [], False), ([], [], False), (['M12205'], ['Exhibits'], True)]:
@@ -79,6 +80,19 @@ class ParserTests(unittest.TestCase):
     def test_deduplicates_equivalent_model_values(self):
         self.response(['m12205', 'M12205'], ['Exhibits', 'Exhibits'])
         self.assertTrue(parse_request('M12205', 'Exhibits').valid)
+
+    def test_multiple_matters_normalize_and_deduplicate(self):
+        self.response(['m 12205', 'M12345', 'M12205'], ['Exhibits'])
+        parsed = parse_request('M12205 and m 12345', 'Exhibits')
+        self.assertEqual(parsed.matters, ('M12205', 'M12345'))
+
+    def test_one_fabricated_matter_rejects_entire_batch(self):
+        self.response(['M12205', 'M99999'], ['Exhibits'])
+        self.assertFalse(parse_request('M12205 and M12345', 'Exhibits').valid)
+
+    def test_multiple_categories_for_multiple_matters_require_clarification(self):
+        self.response(['M12205', 'M12345'], ['Exhibits', 'Transcripts'])
+        self.assertFalse(parse_request('M12205 exhibits; M12345 transcripts', '').valid)
 
     def test_timeout_is_operational_failure(self):
         self.parse.side_effect = APIConnectionError(request=httpx.Request('POST', 'https://api.openai.com/v1/responses'))
