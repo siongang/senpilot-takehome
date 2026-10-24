@@ -1,8 +1,8 @@
 # Build plan: Senpilot regulatory document agent
 
-This is the execution checklist for the [architecture](./ARCHITECTURE.md). The target is a live email address that accepts one matter number and one document type, downloads up to 10 matching files from the public documents database, and replies with a ZIP plus verified matter metadata and counts.
+This is the execution checklist for the [architecture](./ARCHITECTURE.md). The target is a live email address that accepts one or more matter numbers and one shared document type, downloads up to 10 matching files from the public documents database, and replies with a ZIP plus verified matter metadata and counts.
 
-**Progress on October 24, 2026:** The updated application is deployed on DigitalOcean with signed webhooks, OpenAI parsing, SQLite persistence, and the browser worker. All 66 tests passed in the deployed Docker image. A hosted ten-file scrape and a fresh six-file Key Documents email succeeded; the recipient confirmed the reply and ZIP opened. Duplicate delivery, container replacement, service restart, ZIP integrity, and backup checks passed. A stable HTTPS address (replacing the temporary development tunnel), whole-host reboot verification, publishing the latest code, and the demo remain. Older checklist entries below are the original acceptance plan and may not reflect subsequent implementation; use the code and current README for implementation status.
+**Progress on October 24, 2026:** The updated application is deployed on DigitalOcean with signed webhooks, OpenAI parsing, SQLite persistence, and the browser worker. All 81 tests pass in the deployed Docker image, covering multiple matters with separate jobs and replies, missing-matter responses, and delivery retries. A hosted ten-file scrape and a fresh six-file Key Documents email succeeded; the recipient confirmed the reply and ZIP opened. Duplicate delivery, container replacement, service restart, ZIP integrity, and backup checks passed. A stable HTTPS address (replacing the temporary development tunnel), whole-host reboot verification, publishing the latest code, and the demo remain. Older checklist entries below are the original acceptance plan and may not reflect subsequent implementation; use the code and current README for implementation status.
 
 ## Scope and definition of done
 
@@ -11,7 +11,7 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 ### Required path (P0)
 
 - [x] An external sender can email the agent address and receive its hosted result.
-- [x] The agent extracts exactly one matter number (`M` plus five digits) and one of Exhibits, Key Documents, Other Documents, Transcripts, or Recordings from that email.
+- [x] The agent extracts each requested matter number (`M` plus five digits) and one shared type from Exhibits, Key Documents, Other Documents, Transcripts, or Recordings from that email.
 - [x] The worker opens the specified UARB site, searches through **Go Directly to Matter**, and verifies the result is the requested matter.
 - [x] It reads the matter header and the counts on all five document tabs.
 - [x] It opens the requested tab and downloads up to 10 files using **Go Get It**.
@@ -25,7 +25,8 @@ The assignment asks for a three-hour effort. Protect time for a running agent, a
 - [ ] P1: Better recovery for intermittent website failures, partial downloads, and archives near the email size limit.
 - [ ] P1: Clear clarification replies for missing or ambiguous matter/category.
 - [ ] P1: Immediate acknowledgment and status replies such as “is it ready?”
-- [ ] P2: Reuse matter context across follow-up emails and process multiple requests from one email.
+- [x] Process multiple matters with one shared document type from one email, using one job and reply per matter.
+- [ ] P2: Reuse matter context across follow-up emails and support different document types per matter in a single email.
 - [x] OpenAI structured request parsing, promoted into the current scope.
 - [ ] P2: PDF-content summaries, full document indexing, vector search, and a dashboard.
 

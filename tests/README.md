@@ -6,7 +6,7 @@ Run `.venv/bin/python -m unittest discover -s tests -v`. Tests mock OpenAI, brow
 - `test_parser_openai.py`: structured extraction, ambiguity, local validation, API failure classification, and configuration.
 - `test_scraper.py`: bounded retries, atomic download cleanup, public-only traversal, size/file limits, zero counts, and diagnostics.
 - `test_jobs.py`: additive migration, reopen persistence, competing claims, lease fencing, crash recovery, retry exhaustion, and separate failure notifications.
-- `test_worker.py`: durable intake/parsing, threaded lease renewal, clarification, terminal failures, exact send retries, and expired-idempotency holds.
+- `test_worker.py`: durable intake/parsing, threaded lease renewal, clarification, missing-matter replies without attachments, independent matter outcomes, terminal failures, exact send retries, and expired-idempotency holds.
 - `test_webhook.py`: real Svix signatures, duplicate/wrong-inbox delivery, request limits, persistence failures, canonical message fetching, HTML-only mail, and queue-only processing.
 
 Live-site and AgentMail smoke runs are recorded in the root [README](../README.md#current-behavior-and-limits). A fresh hosted email acceptance test passed on October 24, 2026.

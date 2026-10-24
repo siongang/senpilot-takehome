@@ -11,7 +11,7 @@ Build an email-driven service that accepts a matter number and document type, re
 - Supported categories: Exhibits, Key Documents, Other Documents, Transcripts, Recordings.
 - Matter numbers have the form `M` followed by five digits, such as `M12205`.
 - The reply must report category counts across the matter, even though downloads come from one requested category.
-- The first version handles one matter and one category per incoming email. The example request in the assignment is the primary path.
+- The agent handles one or more matters and one shared category per incoming email. It sends one separate result email per distinct matter. The example request in the assignment is the primary path.
 - The application must remain available for evaluator requests after submission.
 - Conversation state, acknowledgments, search indexing, embeddings, a research UI, and document-content analysis are later iterations. OpenAI request parsing is now implemented.
 
@@ -42,14 +42,14 @@ The email provider handles receiving and sending messages. A separately running 
 | Component | Responsibility |
 | --- | --- |
 | Incoming email adapter | Receive provider events or poll for messages; persist a job before acknowledging the event; deduplicate messages. |
-| Request parser | Use OpenAI structured extraction inside a persisted job; locally validate one matter number and one supported category. |
+| Request parser | Use OpenAI structured extraction inside a persisted job; locally validate all matter numbers and one shared supported category. |
 | Job store and queue | Persist status, attempts, request details, intermediate results, and delivery information. |
 | Browser adapter | Find and verify the matter; extract metadata and all category counts; download up to 10 requested files. |
 | Packaging | Use isolated job directories, safe filenames, and ZIP creation; verify the archive contains the expected successful downloads. |
 | Response builder | Produce a factual summary and transparent download result from structured data. |
 | Email delivery adapter | Reply in the original thread with the ZIP; retain the outgoing provider message ID. |
 
-Incoming messages are persisted before the worker calls OpenAI. Structured extraction returns matter numbers, canonical categories, and ambiguity; local validation confirms the selected matter number occurs in the email. Missing or ambiguous inputs produce clarification. Operational parser failures are classified separately so temporary failures can retry. Browser navigation, counting, downloading, packaging, and response facts follow explicit application logic; a template composes the final email.
+Incoming messages are persisted before the worker calls OpenAI. Structured extraction returns matter numbers, canonical categories, and ambiguity; local validation confirms every selected matter number occurs in the email. Missing or ambiguous inputs produce clarification. Operational parser failures are classified separately so temporary failures can retry. Browser navigation, counting, downloading, packaging, and response facts follow explicit application logic; a template composes the final email.
 
 Email text, website text, and downloaded documents are data. They cannot override the workflow, select arbitrary retrieval sites, or redirect results to unrelated recipients.
 
@@ -74,7 +74,7 @@ Keep browser output structured. A matter lookup produces one metadata snapshot, 
 
 | Record | Key fields | Why it exists |
 | --- | --- | --- |
-| `jobs` | `id`, unique `incoming_message_id`, sender, reply headers, matter number, requested category, status, attempts, `next_attempt_at`, error, ZIP path/size, `outgoing_message_id`, timestamps | The request queue and its progress; prevents duplicate processing. |
+| `jobs` | `id`, `incoming_message_id`, `request_index`, `parent_job_id`, sender, reply headers, matter number, requested category, status, attempts, `next_attempt_at`, error, ZIP path/size, `outgoing_message_id`, timestamps | The request queue and its progress; prevents duplicate processing. |
 | `matter_snapshots` | `job_id`, source URL, matter number, title/description, status, type, category, date received, second date value and observed label, outcome, `scraped_at` | Reproducible facts used in the response. One snapshot per job initially. |
 | `category_counts` | `snapshot_id`, category, nullable count, observation status | Exactly five category observations. `NULL` means unavailable; `0` means the site showed none. |
 | `documents` | `job_id`, source document ID if visible, title, security label, date filed, extension, displayed position, download status, saved path, byte size, checksum, error | Tracks the selected documents and confirms what went into the ZIP. |
@@ -116,7 +116,7 @@ Legacy parsed jobs may start at `queued`; ambiguous requests pass through `clari
 
 Use `retry_pending` for a temporary failure and `failed` after retries are exhausted. The current status, stage timestamps, attempts, and last error make progress visible in logs or a small CLI. `completed` means the email provider accepted the result; delivery or a bounce is a separate signal if available.
 
-- Enforce uniqueness on the inbound provider message ID so redelivery does not enqueue the same email twice.
+- Enforce uniqueness on `(inbox_id, message_id, request_index)`. Intake always inserts index 0, so redelivery cannot enqueue the same email twice. Parsing atomically assigns the first matter to that job and queues sibling jobs for the remaining distinct matters with the original message ID and a parent job reference. Each matter has independent retries, ZIP, and delivery idempotency key.
 - Claim a job atomically and set a lease deadline; a restarted worker can reclaim an expired job.
 - Write progress and scraped facts after each stage. Retain downloaded files and the ZIP so an email retry does not repeat website work.
 - Retry temporary website and email failures with a bound; report a permanent failure clearly.
@@ -128,7 +128,7 @@ SQLite requires a persistent volume and a single-host deployment. A host with ep
 
 ## Core response behavior
 
-- A valid request creates one job and receives one result email in the original thread. An immediate acknowledgment is an optional later addition.
+- A valid request creates one job per distinct matter and receives one result email per matter in the original thread. An immediate acknowledgment is an optional later addition.
 - If the matter or category is missing, ambiguous, or unsupported, send a short clarification instead of queuing a scrape.
 - Use the website's title, status, type/category, and date fields as labeled; do not invent unavailable facts.
 - Report all five category counts and a clearly labeled aggregate. Verify whether categories overlap before calling the aggregate a unique-file total.
@@ -136,7 +136,7 @@ SQLite requires a persistent volume and a single-host deployment. A host with ep
 - Report the available count, the number attached, and any partial failure. For a zero-count category, attach a valid empty ZIP and say that it is empty.
 - Keep saved files under a conservative 4 MB total budget before ZIP creation to stay under AgentMail's 6 MB inline request limit after Base64 encoding. Skip an oversized row and continue to later rows; report skips in the reply.
 
-Optional iterations include immediate acknowledgment, using matter context across replies, more flexible language parsing, multiple requests per email, and a status response to “is it ready?” These can use the same job and snapshot records. URL-backed AgentMail attachments could raise the current 4 MB raw-file budget later.
+Optional iterations include immediate acknowledgment, using matter context across replies, more flexible language parsing, different document types for different matters in one email, and a status response to “is it ready?” These can use the same job and snapshot records. URL-backed AgentMail attachments could raise the current 4 MB raw-file budget later.
 
 ## Hosting and validation gates
 

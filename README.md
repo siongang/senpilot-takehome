@@ -1,6 +1,6 @@
 # Senpilot regulatory document agent
 
-Email the agent one UARB matter number (`M` plus five digits) and one document type: Exhibits, Key Documents, Other Documents, Transcripts, or Recordings. The worker retrieves public documents for that matter, attaches up to ten in a ZIP, and replies with the matter header and all five category counts. The [build plan](./BUILD_PLAN.md), [architecture](./ARCHITECTURE.md), and [live-site notes](./UARB_SITE_NOTES.md) explain the scope and observed website behavior.
+Email the agent one or more UARB matter numbers (`M` plus five digits) and one document type: Exhibits, Key Documents, Other Documents, Transcripts, or Recordings. The worker creates a separate job for each matter and sends a separate reply with its own ZIP of up to ten files, matter header, and all five category counts. For example: `Send Key Documents for M12205 and M12345`. One document type applies to all listed matters; requests with multiple document types receive clarification. The [build plan](./BUILD_PLAN.md), [architecture](./ARCHITECTURE.md), and [live-site notes](./UARB_SITE_NOTES.md) explain the scope and observed website behavior.
 
 ## Run locally
 
@@ -30,6 +30,8 @@ The command prints a path under `runtime/manual/` containing `matter.json`, down
 
 The development process is the worker above; no HTTP server or port is required for polling. Stop it with Ctrl-C. Run automated checks with `.venv/bin/python -m unittest discover -s tests -v`.
 
+If UARB explicitly reports that a matter was not found, the agent replies with that matter number and asks you to check it, without attaching a ZIP. Site loading errors and timeouts are retried instead of being reported as missing matters.
+
 For webhook intake, configure `AGENTMAIL_WEBHOOK_SECRET` and run the receiver and worker in separate terminals using the same runtime directory:
 
 ```sh
@@ -41,7 +43,9 @@ Register `POST /webhooks/agentmail` for AgentMail's `message.received` event. Th
 
 ## Request processing and recovery
 
-Incoming email is persisted before OpenAI parsing. The model extracts one matter number and one canonical category, and local validation rejects malformed or fabricated matter numbers. Missing or ambiguous requests receive clarification; temporary API failures stay in the durable retry queue. OpenAI interprets the email; Playwright performs website navigation and downloads, and the response uses scraped facts.
+Incoming email is persisted before OpenAI parsing. The model extracts all requested matter numbers and one shared canonical category, and local validation rejects malformed or fabricated matter numbers. Missing or ambiguous requests receive clarification; temporary API failures stay in the durable retry queue. OpenAI interprets the email; Playwright performs website navigation and downloads, and the response uses scraped facts.
+
+Expansion into one job per distinct matter is atomic. Duplicate webhook deliveries do not repeat expansion; each job has its own files, attachment budget, retry state, and email idempotency key. All replies stay in the original thread, and a failed matter does not prevent other matters from completing.
 
 SQLite retains job state, bounded attempts, leases, parsed requests, scrape results, and ZIP paths. The scraper separates lookup, metadata extraction, category navigation, row traversal, and validated downloading, with bounded browser/download retries and failure diagnostics under each download directory. A retry during scraping starts that scrape again; individual downloaded rows are not checkpointed across process crashes.
 
@@ -54,6 +58,8 @@ The browser reads metadata and counts from the UARB matter page, then follows ea
 AgentMail limits inline attachment requests to 6 MB. The browser keeps saved files under a conservative 4 MB budget, skipping a file that would exceed it and continuing to later rows. This may yield fewer than ten attachments; the reply reports the actual count. The five tab counts are summed as **category listings**, since a file can appear in more than one tab.
 
 On October 24, 2026 the updated application was deployed to a DigitalOcean Droplet with signed AgentMail webhook intake, OpenAI parsing, and a persistent SQLite/files volume. All 66 tests passed inside the server's Docker image. A hosted ten-file Other Documents scrape for `M12205` produced a verified 2.4 MB ZIP. A fresh external Key Documents email completed on its first attempt in approximately 12 seconds and delivered six valid PDFs in a 987 KB ZIP; the recipient confirmed it arrived and opened. Signed duplicate delivery created no additional job or reply. Files survived container replacement, and the completed email job and ZIP survived a service restart. A backup was downloaded off the server.
+
+The multi-matter extension is also deployed. All 81 automated tests pass locally and inside the server image, including independent matter replies, missing-matter responses, send retries, atomic expansion, and migration rollback. A migration rehearsal preserved every field in the three existing hosted jobs; the migrated database passed its integrity check. Live OpenAI checks covered multiple matters, repeated matter numbers, alternatives, and mixed document types. Recipient confirmation of a multi-matter email is still pending.
 
 The hosted development endpoint currently uses a temporary Cloudflare Quick Tunnel. Its URL can change when the tunnel restarts; a stable HTTPS address is still required before final evaluation. Whole-host reboot recovery has not yet been verified. Publishing the latest code, checking evaluator access, and recording the Loom demo also remain.
 
