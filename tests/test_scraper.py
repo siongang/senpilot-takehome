@@ -1,5 +1,6 @@
 """Browser recovery tests without a live website or Chromium process."""
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,12 +75,35 @@ def search_page(*, body="Loading documents", dialog=False, dialog_after_click=Fa
 
 
 class ScraperTests(unittest.TestCase):
+    def test_matter_readiness_does_not_require_an_exhibits_count(self):
+        page = MagicMock()
+        with patch.object(browser, "_raise_if_matter_missing"):
+            browser._wait_for_opened_matter(page, "M12406", 1000)
+        pattern = page.get_by_role.call_args_list[0].kwargs["name"]
+        self.assertIsNotNone(pattern.fullmatch("Exhibits -"))
+
+    def test_navigation_tab_matches_with_or_without_a_count(self):
+        for category in CATEGORIES:
+            pattern = re.compile(browser.TAB_NAV_PATTERN.format(re.escape(category)))
+            for label in (category, category + " -", category + " - 29"):
+                self.assertIsNotNone(pattern.fullmatch(label), label)
+            self.assertIsNone(pattern.fullmatch(category + " Archive - 29"))
+            self.assertIsNone(pattern.fullmatch("Other " + category + " - 29"))
+
+    def test_missing_initial_count_is_not_treated_as_zero(self):
+        page = MagicMock()
+        page.get_by_role.return_value.first.inner_text.return_value = "Exhibits -"
+        with self.assertRaisesRegex(ValueError, "Could not read count for Exhibits"):
+            browser._read_counts(page)
+
     def test_category_retry_skips_click_when_tab_is_selected(self):
         page = MagicMock()
         tab = page.get_by_role.return_value
         selected = page.locator.return_value.filter.return_value
         selected.count.return_value = 1
         browser._open_category(page, "Recordings")
+        navigation_pattern = page.get_by_role.call_args_list[0].kwargs["name"]
+        self.assertIsNotNone(navigation_pattern.fullmatch("Recordings -"))
         tab.click.assert_not_called()
         selected.first.wait_for.assert_any_call(state="visible", timeout=30000)
         selected.count.return_value = 0

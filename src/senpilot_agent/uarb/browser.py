@@ -16,6 +16,9 @@ from senpilot_agent.uarb.lists import read_list_pdf
 
 UARB_URL = "https://uarb.novascotia.ca/fmi/webd/UARB15"
 TAB_PATTERN = r"^{}\s*-\s*(\d+)$"
+# WebDirect can remove counts from inactive tabs after a layout change. The
+# category name remains, sometimes followed by a bare dash.
+TAB_NAV_PATTERN = r"^{}(?:\s*-\s*\d*)?$"
 # Base64 adds about one third to the ZIP when AgentMail receives it inline.
 MAX_SAVED_BYTES = 4_000_000
 
@@ -361,7 +364,9 @@ def _raise_if_matter_missing(page: Page, matter_number: str, *, body: bool = Fal
 def _wait_for_opened_matter(page: Page, matter_number: str, timeout: int) -> None:
     """Return when the matter tabs appear. A not-found dialog ends the wait."""
     _raise_if_matter_missing(page, matter_number)
-    exhibits = page.get_by_role("button", name=re.compile(r"^Exhibits\s*-\s*\d+$"))
+    exhibits = page.get_by_role(
+        "button", name=re.compile(TAB_NAV_PATTERN.format(re.escape("Exhibits")))
+    )
     opened = exhibits.or_(_not_found_dialog(page)).or_(_not_found_title(page)).or_(_not_found_message(page))
     try:
         opened.first.wait_for(state="visible", timeout=timeout)
@@ -410,7 +415,7 @@ def _find_matter(page: Page, matter_number: str) -> None:
 def _open_category(page: Page, category: str) -> None:
     """Open a nonempty category and wait for its downloadable rows."""
     tab = page.get_by_role(
-        "button", name=re.compile(TAB_PATTERN.format(re.escape(category)))
+        "button", name=re.compile(TAB_NAV_PATTERN.format(re.escape(category)))
     )
     selected = page.locator(".iwps_button_bar_segment.fm-selected").filter(has=tab)
     # WebDirect puts a persistent glass pane over the selected tab. A retry
