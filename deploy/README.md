@@ -108,7 +108,9 @@ The Compose project and `senpilot_runtime` volume retain their existing names. T
 
 If startup or readiness fails, the script attempts to restart the previous image with its previous Compose file and reports failure to Actions. It preserves runtime data and does not automatically restore an old database or reverse schema migrations. An incompatible database migration requires manual recovery using the pre-deployment backup. Build and test failures leave the running app untouched.
 
-Release directories, images, and runtime backups are retained for recovery. Monitor disk space and remove older releases/images/backups when they are no longer needed; keep the current and previous release, and copy important backups off the Droplet. This workflow does not add a hosting service or a paid deployment subscription.
+Release directories, images, and runtime backups are retained for recovery. Remove older releases, images, and backups by hand when they are no longer needed; keep the current and previous release, and copy important backups off the Droplet. This workflow does not add a hosting service or a paid deployment subscription.
+
+`/usr/local/sbin/senpilot-cleanup` runs at 08:15 UTC and deletes only `downloads-attempt-*` and `archive-attempt-*` directories for finished jobs older than seven days. It leaves the SQLite database, release directories, images, and backups in place. Files stay while a job can still send, including retries and `delivery_review`. `senpilot-cleanup --dry-run` prints the plan without deleting. The cron reads the installed copy, like the other bootstrap scripts, so updating it requires the operator's SSH access. Logs go to `/var/log/senpilot-cleanup.log`.
 
 ### Manual update
 
